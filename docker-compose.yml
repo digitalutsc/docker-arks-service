@@ -1,0 +1,85 @@
+# Dev and prototype stack for the ARK service: gunicorn, a Celery worker,
+# Redis and PostgreSQL.
+#
+# The application source lives in its own repository. ARKS_SRC (see .env)
+# points at that checkout and it is wired in below as the named build context
+# `src`; the Dockerfile takes what it needs from there.
+#
+# The project is named explicitly so renaming either checkout does not orphan
+# the volumes.
+name: arkservice
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ark
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ark}
+      POSTGRES_DB: ark
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ark"]
+      interval: 5s
+      retries: 10
+    # Not published: the database is reachable from the other containers by
+    # name. Uncomment only if you need a client on the host, and set
+    # POSTGRES_PASSWORD in .env to something of your own if you do.
+    # ports: ["5432:5432"]
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  web:
+    image: arkservice-web:local
+    build:
+      context: .
+      additional_contexts:
+        src: ${ARKS_SRC:-../arks-service-new}
+    command: >
+      sh -c "python manage.py migrate --no-input &&
+             gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --access-logfile -"
+    environment: &env
+      DATABASE_URL: postgres://ark:${POSTGRES_PASSWORD:-ark}@db:5432/ark
+      CELERY_BROKER_URL: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/1
+      # No default: bringing the stack up should fail loudly rather than run
+      # with session cookies anyone can forge. `make install` generates one.
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make install` (or `make env`) to generate one in .env}
+      DJANGO_DEBUG: "${DJANGO_DEBUG:-false}"
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      SESSION_COOKIE_SECURE: "false"
+      CSRF_COOKIE_SECURE: "false"
+      MEDIA_ROOT: /data/media
+    volumes: [media:/data/media]
+    ports: ["${ARKS_PORT:-8000}:8000"]
+    # /healthz proves the database and the counter cache are reachable, not
+    # merely that gunicorn bound the port. `up --wait` blocks on this, so the
+    # stack is only reported ready once migrations have run and it can serve.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker:
+    # No build section: the worker runs the same image web builds, so the
+    # source is compiled into one image rather than two.
+    image: arkservice-web:local
+    command: celery -A arkservice worker --beat --loglevel=info --concurrency=2
+    environment: *env
+    volumes: [media:/data/media]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  media:
