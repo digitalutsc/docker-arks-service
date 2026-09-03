@@ -22,6 +22,12 @@ IMAGE := arkservice-web:local
 # creates .env during its own run, long after this file has been read.
 ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tail -1)
 
+# Compose interpolates the mandatory DJANGO_SECRET_KEY for every command it
+# runs, tearing down included. Taking the stack apart should not depend on a
+# .env that may be blank or gone, so teardown supplies a throwaway value; it
+# reaches no container, because down starts none.
+TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down
+
 help: ## Show this help
 	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
 
@@ -35,10 +41,10 @@ up: env ## Start an already-built stack
 	@$(MAKE) --no-print-directory info
 
 down: ## Stop the stack, keeping the data
-	@$(COMPOSE) down
+	@$(TEARDOWN_ENV) $(COMPOSE) down
 
 clean: ## Remove the stack entirely: containers, volumes and the built image
-	@$(COMPOSE) down --volumes --remove-orphans
+	@$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans
 	@docker image rm -f $(IMAGE) >/dev/null 2>&1 || true
 	@echo "Stack removed. .env was kept: it holds this machine's secret key and admin password."
 
@@ -92,5 +98,5 @@ shell: ## Open a shell inside the application container
 	@$(COMPOSE) exec web sh
 
 manage: ## Run a management command: make manage ARGS="mint utsc 10"
-	@test -n "$(ARGS)" || { echo 'Usage: make manage ARGS="<command> [options]"'; exit 1; }
+	$(if $(strip $(ARGS)),,$(error Usage: make manage ARGS="<command> [options]"))
 	@$(COMPOSE) exec web python manage.py $(ARGS)

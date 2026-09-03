@@ -27,7 +27,7 @@ user = User.objects.filter(username=username).first()
 
 if user is None:
     User.objects.create_superuser(username=username, email=email, password=password)
-    print(f"Created administrator {username!r} with password {password!r}.")
+    print(f"Created administrator {username!r} with password: {password}")
     print("A superuser is automatically an Admin in the staff interface.")
 else:
     # The password is deliberately left as it is. Re-running `make install`

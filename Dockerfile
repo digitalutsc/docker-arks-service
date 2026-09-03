@@ -28,8 +28,8 @@ WORKDIR /app
 # drivers are installed: the stack runs PostgreSQL, but the same image is used
 # to rehearse the MySQL path production uses.
 COPY --from=src pyproject.toml uv.lock ./
-RUN uv sync --no-install-project --extra postgres --extra mysql --frozen 2>/dev/null \
-    || uv sync --no-install-project --extra postgres --extra mysql
+RUN uv sync --no-install-project --no-dev --extra postgres --extra mysql --frozen 2>/dev/null \
+    || uv sync --no-install-project --no-dev --extra postgres --extra mysql
 
 # The application itself, one line per top-level package. Adding a new Django
 # app to arks-service-new means adding a line here — that is the price of
