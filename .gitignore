@@ -1,0 +1,4 @@
+# Holds this machine's generated secret key and administrator password.
+.env
+
+.DS_Store
