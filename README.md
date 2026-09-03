@@ -73,15 +73,30 @@ Everything is in `.env`, which `make install` creates and never overwrites.
 | `ARKS_PORT` | `8000` | Host port the stack listens on |
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
-| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Hostnames the app answers on |
-| `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network |
+| `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
+| `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network. Set it before the first install |
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make install` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
-| `DJANGO_SUPERUSER_PASSWORD` | generated | Printed at the end of `make install` |
+| `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
 
-`.env` is read by Compose and by the Makefile, so keep comments on their own
-lines and values free of `#`. It is gitignored: it holds this machine's secret
-key and administrator password. `make clean` deliberately keeps it.
+`.env` is read by Compose and by the Makefile, which parse it slightly
+differently. Two rules keep them agreeing: **comments on their own lines**, and
+**no quotes around values**. A trailing comment or a pair of quotes ends up
+inside the value, so a quoted password would create an account whose password
+includes the quotes.
+
+Two variables are less free than they look:
+
+- **`ARKS_EXTRA_HOSTS` adds to the allowed hosts, it does not replace them.**
+  The container healthcheck asks for `localhost`, and Django answers 400 to a
+  hostname it does not know, so a stack that dropped `localhost` would never
+  become healthy and `make install` would wait forever.
+- **`POSTGRES_PASSWORD` only takes effect the first time the database volume is
+  created.** Changing it later leaves the application unable to authenticate;
+  `make clean` first, then change it.
+
+The file is gitignored: it holds this machine's secret key and administrator
+password, and is created mode 600. `make clean` deliberately keeps it.
 
 ## How the image gets the source
 
@@ -127,3 +142,12 @@ always a migration failure or an unreachable database; the healthcheck probes
 **`ModuleNotFoundError` for an application package.** A new top-level package
 was added to the application without a matching `COPY --from=src` line in the
 Dockerfile.
+
+**Large `arkservice-web:latest` and `arkservice-worker:latest` images left over.**
+Those are from the older Compose file that lived inside the application
+repository, before the split. `make clean` does not touch them because they are
+not this stack's. Remove them once by hand:
+
+```bash
+docker image rm arkservice-web:latest arkservice-worker:latest
+```

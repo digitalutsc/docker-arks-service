@@ -50,7 +50,11 @@ services:
       # with session cookies anyone can forge. `make install` generates one.
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make install` (or `make env`) to generate one in .env}
       DJANGO_DEBUG: "${DJANGO_DEBUG:-false}"
-      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      # localhost is always present because the container healthcheck curls it,
+      # and Django answers 400 for a host it does not recognise. Replacing the
+      # whole list would leave the stack permanently unhealthy, so operators add
+      # to it through ARKS_EXTRA_HOSTS instead of overwriting it.
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1${ARKS_EXTRA_HOSTS:+,$ARKS_EXTRA_HOSTS}"
       SESSION_COOKIE_SECURE: "false"
       CSRF_COOKIE_SECURE: "false"
       MEDIA_ROOT: /data/media
@@ -79,6 +83,9 @@ services:
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
+      # web runs the migrations, so the worker waits for it rather than racing
+      # a half-built schema on a first install.
+      web: {condition: service_healthy}
 
 volumes:
   pgdata:
