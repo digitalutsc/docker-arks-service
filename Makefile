@@ -12,11 +12,14 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help check env build install up down clean rebuild admin info logs ps shell manage
+.PHONY: help check env build install up down clean rebuild admin info logs ps shell manage import-dump
 
 COMPOSE ?= docker compose
 DEFAULT_SRC := ../arks-service-new
 IMAGE := arkservice-web:local
+
+# Where `make import-dump` leaves the review CSV it brings back out.
+REPORT ?= import-report.csv
 
 # Read one value out of .env at recipe time. Not at parse time: `make install`
 # creates .env during its own run, long after this file has been read.
@@ -29,7 +32,7 @@ ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tail -1)
 TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down
 
 help: ## Show this help
-	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
+	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-12s %s\n", $$1, $$2}'
 
 install: env check build ## Build and start the whole stack from nothing
 	@$(COMPOSE) up -d --wait
@@ -100,3 +103,20 @@ shell: ## Open a shell inside the application container
 manage: ## Run a management command: make manage ARGS="mint utsc 10"
 	$(if $(strip $(ARGS)),,$(error Usage: make manage ARGS="<command> [options]"))
 	@$(COMPOSE) exec web python manage.py $(ARGS)
+
+# The export never enters the image: it is copied into the running container,
+# read, and removed again. Nothing is mounted, so the file can live anywhere.
+#
+# It goes to /data rather than /tmp because `docker compose cp` writes as root
+# while the container runs unprivileged, and /tmp is sticky — the application
+# user could not delete its own import afterwards. /data belongs to that user.
+import-dump: ## Import a legacy export: make import-dump DUMP=/path/ark.sql [ARGS="--dry-run"]
+	$(if $(strip $(DUMP)),,$(error Usage: make import-dump DUMP=/path/to/ark.sql [ARGS="--dry-run"]))
+	@test -f "$(DUMP)" || { echo "No such file: $(DUMP)"; exit 1; }
+	@echo "Copying $(DUMP) into the web container ..."
+	@$(COMPOSE) cp "$(DUMP)" web:/data/legacy-dump$(suffix $(DUMP))
+	@$(COMPOSE) exec -T web python manage.py import_legacy \
+	    --legacy-dump /data/legacy-dump$(suffix $(DUMP)) --report /data/import-report.csv $(ARGS)
+	@$(COMPOSE) cp web:/data/import-report.csv "$(REPORT)"
+	@$(COMPOSE) exec -T web rm -f /data/legacy-dump$(suffix $(DUMP)) /data/import-report.csv
+	@echo "Review report copied to: $(REPORT)"

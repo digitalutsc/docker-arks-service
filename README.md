@@ -58,6 +58,7 @@ alone.
 make manage ARGS="createcollection 'UTSC Digital Collections' \
     --prefix utsc --naan 61220 --naa 'UTSC Library' --template .zd"
 make manage ARGS="mint utsc 10"
+make import-dump DUMP=../legacy/ARK_CORE.sql   # rehearse the migration
 make logs        # follow every service
 make ps          # what is running
 make shell       # a shell inside the web container
@@ -127,6 +128,25 @@ drivers, so you can point `DATABASE_URL` at a MySQL server to rehearse the
 production path. The application keeps its schema inside the portable subset and
 its CI runs the suite against both engines.
 
+## Rehearsing the migration
+
+`make import-dump DUMP=/path/to/ARK_CORE.sql` loads a legacy export — a
+phpMyAdmin or `mysqldump` `.sql` file, gzipped or not — into this stack, so you
+can see what the migration produces before it happens anywhere that matters. Add
+`ARGS="--dry-run"` to have it report what it would do and keep none of it.
+
+The file is copied into the running container, read there, and deleted again;
+nothing is mounted and nothing enters the image, so the export can sit anywhere
+on your machine. Every run leaves an `import-report.csv` here listing the rows
+that could not be carried over exactly as legacy held them.
+
+Full walk-through in [MIGRATION.md](MIGRATION.md); what the migration actually
+does, and the real cutover runbook, are in
+[`../arks-service-new/MIGRATION.md`](../arks-service-new/MIGRATION.md).
+
+A legacy export holds staff passwords in a form that can be decrypted. Keep it
+out of both checkouts and delete it when you are done.
+
 ## Troubleshooting
 
 **`make install` fails at the `check` step.** It cannot find `manage.py` under
@@ -142,6 +162,9 @@ always a migration failure or an unreachable database; the healthcheck probes
 **`ModuleNotFoundError` for an application package.** A new top-level package
 was added to the application without a matching `COPY --from=src` line in the
 Dockerfile.
+
+**`make import-dump` fails while copying the file in.** The stack is not
+running; `docker compose cp` needs a live container. `make up` first.
 
 **Large `arkservice-web:latest` and `arkservice-worker:latest` images left over.**
 Those are from the older Compose file that lived inside the application

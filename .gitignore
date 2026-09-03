@@ -2,3 +2,9 @@
 .env
 
 .DS_Store
+
+# Legacy exports are large and hold staff credentials. Never commit one.
+*.sql
+*.sql.gz
+import-report.csv
+cutover-diff.csv
