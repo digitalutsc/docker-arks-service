@@ -30,7 +30,7 @@ if user is None:
     print(f"Created administrator {username!r} with password: {password}")
     print("A superuser is automatically an Admin in the staff interface.")
 else:
-    # The password is deliberately left as it is. Re-running `make install`
+    # The password is deliberately left as it is. Re-running `make up`
     # should not reset an account whose password someone has since changed.
     restored = [
         field

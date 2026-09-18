@@ -1,8 +1,9 @@
 # docker-arks-service
 
-The Docker deployment of the [ARK service](../arks-service-new). It contains no
+The Docker deployment of the
+[ARK service](https://github.com/digitalutsc/arks-service-new). It contains no
 application code: the source stays in its own repository and this stack builds
-an image from it.
+an image from it, cloning that repository first if you do not have it.
 
 Use it to bring the whole service up on any machine with one command, for
 development, demos and prototyping. **Production does not use Docker** — it runs
@@ -24,33 +25,57 @@ either checkout does not orphan them.
 
 ## Requirements
 
-Docker with Compose v2 (`docker compose version`), and a checkout of the
-application beside this one:
+Docker with Compose v2 (`docker compose version`), and `git`. That is all: a
+clone of this repository on its own is enough, and `make up` fetches the
+application.
+
+The application checkout can be in either of two places, and the first
+`make up` records which in `.env` as `ARKS_SRC`:
 
 ```
-arks-redesign/
-├── arks-service-new/       the application
-└── docker-arks-service/    this repository
+arks-redesign/                      docker-arks-service/    this repository, alone
+├── arks-service-new/               └── src/
+└── docker-arks-service/                └── arks-service-new/   cloned for you, gitignored
 ```
 
-Anywhere else works too — set `ARKS_SRC` in `.env`.
+A checkout beside this one is used where it is. Without one, the application is
+cloned into `src/arks-service-new` inside this repository. Anywhere else works
+too — set `ARKS_SRC` in `.env` yourself.
 
 ## Usage
 
 ```bash
-make install     # build and start everything, from nothing
-make up          # start an already-built stack
+make up          # bring everything up, from nothing if need be
+make install     # the same, but always rebuild the image first
 make down        # stop it, keeping the data
 make clean       # remove it entirely: containers, volumes, image
 make rebuild     # clean, then install
 ```
 
-`make install` is the one to run first. It creates `.env` from `.env.example`,
-generates a Django secret key and an administrator password into it, builds the
-image, starts the stack, waits until it actually answers, creates the
-administrator account, and prints the address and the login. Running it again is
-safe: nothing already set is regenerated, and an existing administrator is left
-alone.
+`make up` is the only one you need. It creates `.env` from `.env.example`,
+generates a Django secret key and an administrator password into it, clones the
+application if there is no checkout, builds the image if there is none, starts
+the stack, waits until it actually answers, creates the administrator account,
+and prints the address and the login. Running it again is safe, and it is also
+the everyday way to start the stack: nothing already set is regenerated, an
+existing checkout is never pulled or reset, an existing image is not rebuilt,
+and an existing administrator is left alone.
+
+### Updating the application
+
+The code is baked into the image, so neither editing the checkout nor pulling it
+changes what is running until the image is rebuilt:
+
+```bash
+git -C src/arks-service-new pull     # or wherever ARKS_SRC points
+make install
+```
+
+### One stack per machine
+
+The Compose project name is fixed, which is what keeps the volumes attached when
+a checkout is renamed. It also means two clones of this repository on one
+machine drive the **same** stack and the same data, not two.
 
 `make` on its own lists every target. The useful extras:
 
@@ -66,17 +91,19 @@ make shell       # a shell inside the web container
 
 ## Configuration
 
-Everything is in `.env`, which `make install` creates and never overwrites.
+Everything is in `.env`, which `make up` creates and never overwrites.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARKS_SRC` | `../arks-service-new` | Path to the application checkout |
+| `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service-new` if one is there, otherwise `./src/arks-service-new` |
+| `ARKS_REPO` | empty | Where to clone the application from when `ARKS_SRC` has nothing in it. Empty means the same host and organisation this repository was cloned from |
+| `ARKS_REF` | empty | Branch or tag to clone. Empty means the default branch |
 | `ARKS_PORT` | `8000` | Host port the stack listens on |
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
 | `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
 | `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network. Set it before the first install |
-| `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make install` creates |
+| `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
 
@@ -91,7 +118,7 @@ Two variables are less free than they look:
 - **`ARKS_EXTRA_HOSTS` adds to the allowed hosts, it does not replace them.**
   The container healthcheck asks for `localhost`, and Django answers 400 to a
   hostname it does not know, so a stack that dropped `localhost` would never
-  become healthy and `make install` would wait forever.
+  become healthy and `make up` would wait forever.
 - **`POSTGRES_PASSWORD` only takes effect the first time the database volume is
   created.** Changing it later leaves the application unable to authenticate;
   `make clean` first, then change it.
@@ -101,7 +128,9 @@ password, and is created mode 600. `make clean` deliberately keeps it.
 
 ## How the image gets the source
 
-Compose passes the application checkout to the build as a named context:
+`make up` makes sure there is a checkout at `ARKS_SRC`, cloning one if the path
+is empty (`scripts/ensure-src.sh`). Compose then passes that checkout to the
+build as a named context:
 
 ```yaml
 build:
@@ -142,15 +171,23 @@ that could not be carried over exactly as legacy held them.
 
 Full walk-through in [MIGRATION.md](MIGRATION.md); what the migration actually
 does, and the real cutover runbook, are in
-[`../arks-service-new/MIGRATION.md`](../arks-service-new/MIGRATION.md).
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service-new/blob/main/MIGRATION.md).
 
 A legacy export holds staff passwords in a form that can be decrypted. Keep it
 out of both checkouts and delete it when you are done.
 
 ## Troubleshooting
 
-**`make install` fails at the `check` step.** It cannot find `manage.py` under
-`ARKS_SRC`. Set that path in `.env`.
+**`make up` cannot clone the application.** The message names the URL it tried.
+By default that is this repository's own `origin` with the repository name
+swapped, so it fails when you can read this repository and not that one, or when
+this one was not cloned from GitHub at all. Set `ARKS_REPO` in `.env` to a URL
+you can reach, or clone the application into the `ARKS_SRC` path by hand.
+
+**`make up` says there is no application checkout and refuses to clone.**
+`ARKS_SRC` points at a directory that has files in it and no `manage.py`. It
+will not clone over somebody's directory. Point `ARKS_SRC` at the checkout, or
+blank it to have it worked out again.
 
 **Compose refuses to start: `DJANGO_SECRET_KEY` is required.** `.env` has a
 blank key. `make env` fills it in.

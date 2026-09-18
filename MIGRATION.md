@@ -8,7 +8,7 @@ back to nothing.
 **Production does not use Docker.** It runs bare on the LAMP VM against MySQL.
 The rules the importer applies, the review report and the real cutover runbook
 all live in
-[`../arks-service-new/MIGRATION.md`](../arks-service-new/MIGRATION.md) — read
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service-new/blob/main/MIGRATION.md) — read
 that one for what the migration *means*. This page is only about driving it
 here.
 
@@ -37,7 +37,7 @@ faster.
 ## 2. Import it
 
 ```bash
-make install                                        # if the stack is not up yet
+make up                                             # if the stack is not up yet
 make import-dump DUMP=../legacy/ARK_CORE.sql ARGS="--dry-run"
 make import-dump DUMP=../legacy/ARK_CORE.sql
 make manage ARGS="ark_stats"
@@ -136,4 +136,4 @@ seconds; writing several million rows to PostgreSQL is the rest. It is one
 transaction, so an interrupted run leaves nothing behind.
 
 Everything else is in
-[`../arks-service-new/MIGRATION.md`](../arks-service-new/MIGRATION.md).
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service-new/blob/main/MIGRATION.md).

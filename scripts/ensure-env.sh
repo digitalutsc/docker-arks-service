@@ -1,8 +1,9 @@
 #!/bin/sh
-# Make .env exist and make sure every secret in it has a value.
+# Make .env exist, and make sure the application path and every secret in it
+# have a value.
 #
 # Idempotent by design: a value that is already set is never touched, so
-# re-running `make install` cannot invalidate sessions or reset a password
+# re-running `make up` cannot invalidate sessions or reset a password
 # somebody has changed.
 set -eu
 cd "$(dirname "$0")/.."
@@ -46,25 +47,47 @@ current_value() {
     sed -n "s/^$1=//p" .env | tr -d '\r' | tail -1
 }
 
-fill_if_blank() {
+# Write a value for a key that is absent or blank; one that is set is left alone.
+set_if_blank() {
     key=$1
+    value=$2
     if ! grep -q "^$key=" .env; then
-        printf '%s=%s\n' "$key" "$(generate_secret)" >> .env
-        echo "Added $key to .env with a generated value"
+        printf '%s=%s\n' "$key" "$value" >> .env
         return
     fi
-    if [ -n "$(current_value "$key")" ]; then
-        return
-    fi
-    value=$(generate_secret)
     awk -v k="$key" -v v="$value" '
         { line = $0; sub(/\r$/, "", line) }
         line == k "=" { print k "=" v; next }
         { print }
     ' .env > .env.tmp && mv .env.tmp .env
     chmod 600 .env
+}
+
+fill_if_blank() {
+    key=$1
+    if [ -n "$(current_value "$key")" ]; then
+        return
+    fi
+    # Assigned first: a failure inside $(...) only stops the script when it
+    # is the whole command, not when it is an argument to another one.
+    secret=$(generate_secret)
+    set_if_blank "$key" "$secret"
     echo "Generated $key in .env"
 }
+
+# Where the application checkout is. Resolved once and written back, because
+# Compose reads .env too and the two must agree on the path. A checkout beside
+# this one is used where it is; otherwise the source goes inside this
+# repository, under the gitignored src/, where `make src` clones it.
+if [ -z "$(current_value ARKS_SRC)" ]; then
+    if [ -f ../arks-service-new/manage.py ]; then
+        src=../arks-service-new
+    else
+        src=./src/arks-service-new
+    fi
+    set_if_blank ARKS_SRC "$src"
+    echo "Set ARKS_SRC=$src in .env"
+fi
 
 fill_if_blank DJANGO_SECRET_KEY
 fill_if_blank DJANGO_SUPERUSER_PASSWORD

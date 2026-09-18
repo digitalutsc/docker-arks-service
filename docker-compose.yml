@@ -3,7 +3,9 @@
 #
 # The application source lives in its own repository. ARKS_SRC (see .env)
 # points at that checkout and it is wired in below as the named build context
-# `src`; the Dockerfile takes what it needs from there.
+# `src`; the Dockerfile takes what it needs from there. `make up` writes
+# ARKS_SRC into .env and clones the checkout if it is missing, so the fallback
+# below only matters for tearing down a stack whose .env is gone.
 #
 # The project is named explicitly so renaming either checkout does not orphan
 # the volumes.
@@ -47,8 +49,8 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/1
       # No default: bringing the stack up should fail loudly rather than run
-      # with session cookies anyone can forge. `make install` generates one.
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make install` (or `make env`) to generate one in .env}
+      # with session cookies anyone can forge. `make up` generates one.
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make up` (or `make env`) to generate one in .env}
       DJANGO_DEBUG: "${DJANGO_DEBUG:-false}"
       # localhost is always present because the container healthcheck curls it,
       # and Django answers 400 for a host it does not recognise. Replacing the

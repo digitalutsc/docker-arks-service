@@ -3,8 +3,13 @@
 
 .DS_Store
 
+# Where `make up` clones the application when there is no checkout beside this
+# one. It is its own repository, not part of this one.
+/src/
+
 # Legacy exports are large and hold staff credentials. Never commit one.
 *.sql
 *.sql.gz
 import-report.csv
 cutover-diff.csv
+.ipynb_checkpoints/*
