@@ -60,6 +60,9 @@ services:
       SESSION_COOKIE_SECURE: "false"
       CSRF_COOKIE_SECURE: "false"
       MEDIA_ROOT: /data/media
+      # Shared with the worker through the anchor on purpose: bulk bind mints
+      # its blank rows there, and the two must agree on the cap. 0 removes it.
+      MINT_MAX_PER_REQUEST: "${MINT_MAX_PER_REQUEST:-10000}"
     volumes: [media:/data/media]
     ports: ["${ARKS_PORT:-8000}:8000"]
     # /healthz proves the database and the counter cache are reachable, not

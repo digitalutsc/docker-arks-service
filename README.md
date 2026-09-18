@@ -106,6 +106,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
+| `MINT_MAX_PER_REQUEST` | `10000` | Largest single mint. `0` removes the cap. Takes effect on the next `make up` |
 
 `.env` is read by Compose and by the Makefile, which parse it slightly
 differently. Two rules keep them agreeing: **comments on their own lines**, and
