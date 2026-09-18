@@ -1,29 +1,28 @@
 # Operations for the whole ARK service Docker stack.
 #
-#   make install   build and start everything, from nothing
-#   make up        start an already-built stack
+#   make up        bring everything up, from nothing if need be
+#   make install   the same, but always rebuild the image first
 #   make down      stop it, keeping the data
 #   make clean     remove it entirely, data and image included
 #   make rebuild   clean, then install
 #
 # The application source is not in this repository; ARKS_SRC in .env says
-# where it is. See README.md.
+# where it is, and `make up` clones it there if it is missing. See README.md.
 
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help check env build install up down clean rebuild admin info logs ps shell manage import-dump
+.PHONY: help check env src build install up down clean rebuild admin info logs ps shell manage import-dump
 
 COMPOSE ?= docker compose
-DEFAULT_SRC := ../arks-service-new
 IMAGE := arkservice-web:local
 
 # Where `make import-dump` leaves the review CSV it brings back out.
 REPORT ?= import-report.csv
 
-# Read one value out of .env at recipe time. Not at parse time: `make install`
+# Read one value out of .env at recipe time. Not at parse time: `make up`
 # creates .env during its own run, long after this file has been read.
-ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tail -1)
+ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -1)
 
 # Compose interpolates the mandatory DJANGO_SECRET_KEY for every command it
 # runs, tearing down included. Taking the stack apart should not depend on a
@@ -34,14 +33,16 @@ TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down
 help: ## Show this help
 	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-12s %s\n", $$1, $$2}'
 
-install: env check build ## Build and start the whole stack from nothing
+# Safe to run every time: nothing already set in .env is regenerated, a
+# checkout that is already there is left alone, the image is only built when
+# there is none, and an existing administrator keeps its password.
+up: env check src ## Bring the whole stack up, from nothing if need be
+	@docker image inspect $(IMAGE) >/dev/null 2>&1 || $(COMPOSE) build --pull
 	@$(COMPOSE) up -d --wait
 	@$(MAKE) --no-print-directory admin
 	@$(MAKE) --no-print-directory info
 
-up: env ## Start an already-built stack
-	@$(COMPOSE) up -d --wait
-	@$(MAKE) --no-print-directory info
+install: build up ## The same as up, but always rebuild the image first
 
 down: ## Stop the stack, keeping the data
 	@$(TEARDOWN_ENV) $(COMPOSE) down
@@ -53,21 +54,18 @@ clean: ## Remove the stack entirely: containers, volumes and the built image
 
 rebuild: clean install ## Blow the stack away and install it again from scratch
 
-build: env ## Build the application image
+build: env check src ## Build the application image
 	@$(COMPOSE) build --pull
 
-check: ## Check that Docker and the application checkout are both there
+check: ## Check that Docker and Compose v2 are there
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed."; exit 1; }
 	@$(COMPOSE) version >/dev/null 2>&1 || { echo "docker compose v2 is required."; exit 1; }
-	@src="$(call ENVGET,ARKS_SRC)"; src="$${src:-$(DEFAULT_SRC)}"; \
-	test -f "$$src/manage.py" || { \
-	  echo "No application checkout at $$src (there is no $$src/manage.py)."; \
-	  echo "Set ARKS_SRC in ./.env to where the arks-service-new checkout is."; \
-	  exit 1; }; \
-	echo "Application source: $$src"
 
-env: ## Create .env if absent and fill in any blank secrets
+env: ## Create .env if absent and fill in the application path and any blank secrets
 	@./scripts/ensure-env.sh
+
+src: env ## Clone the application checkout into ARKS_SRC if it is not there
+	@./scripts/ensure-src.sh
 
 admin: ## Create the administrator account from .env, or leave it alone
 	@user="$(call ENVGET,DJANGO_SUPERUSER_USERNAME)"; \
