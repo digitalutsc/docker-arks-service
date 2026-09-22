@@ -1,0 +1,43 @@
+# Opt-in override: run the stack against MySQL 8.0 instead of PostgreSQL, the
+# engine production uses. Enable it by adding this line to .env, which Compose
+# (and therefore every make target) reads on its own:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.mysql.yml
+#
+# Comment the line out again to go back to PostgreSQL. Each engine keeps its
+# own volume, so switching destroys neither one's data.
+#
+# The !override tags need Docker Compose 2.24.4 or later. Without them the
+# base file's POSTGRES_* variables and pgdata mount would be merged in too.
+
+services:
+  db:
+    image: mysql:8.0
+    environment: !override
+      MYSQL_DATABASE: ark
+      MYSQL_USER: ark
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ark}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-${MYSQL_PASSWORD:-ark}}
+    volumes: !override [mysqldata:/var/lib/mysql]
+    # Ping over TCP rather than the socket: while the image initialises a new
+    # volume it runs a temporary server with networking off, so the database is
+    # not reported healthy until the real server is up.
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u ark -p\"$$MYSQL_PASSWORD\" --silent"]
+      start_period: 30s
+    # Not published, as in the base file. Uncomment only for a client on the host.
+    # ports: ["3306:3306"]
+
+  # The base file shares its environment through a YAML anchor, which is
+  # expanded before the files are merged, so both services are overridden.
+  # Compose merges environment maps key by key; everything else is kept.
+  web:
+    environment:
+      DATABASE_URL: mysql://ark:${MYSQL_PASSWORD:-ark}@db:3306/ark
+
+  worker:
+    environment:
+      DATABASE_URL: mysql://ark:${MYSQL_PASSWORD:-ark}@db:3306/ark
+
+volumes:
+  mysqldata:

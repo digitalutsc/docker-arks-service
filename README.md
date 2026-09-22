@@ -17,10 +17,10 @@ in the application repository.
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
 | `worker` | the same image | Celery worker and beat, for bulk-bind jobs and counter flushes |
 | `redis` | `redis:7-alpine` | Celery broker, login throttle, redirect-counter cache |
-| `db` | `postgres:16-alpine` | the database |
+| `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database) | the database |
 
-Only `web` publishes a port. Data lives in two named volumes, `pgdata` and
-`media`. The Compose project is named `arkservice` explicitly, so renaming
+Only `web` publishes a port. Data lives in two named volumes, `pgdata` (or
+`mysqldata` under MySQL) and `media`. The Compose project is named `arkservice` explicitly, so renaming
 either checkout does not orphan them.
 
 ## Requirements
@@ -102,7 +102,9 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
 | `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
+| `COMPOSE_FILE` | commented out | Set to `docker-compose.yml:docker-compose.mysql.yml` to run MySQL instead of PostgreSQL. See [Database](#database) |
 | `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network. Set it before the first install |
+| `MYSQL_PASSWORD` | `ark` | The same, for the MySQL override. Also used as the MySQL root password |
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
@@ -120,8 +122,8 @@ Two variables are less free than they look:
   The container healthcheck asks for `localhost`, and Django answers 400 to a
   hostname it does not know, so a stack that dropped `localhost` would never
   become healthy and `make up` would wait forever.
-- **`POSTGRES_PASSWORD` only takes effect the first time the database volume is
-  created.** Changing it later leaves the application unable to authenticate;
+- **`POSTGRES_PASSWORD` and `MYSQL_PASSWORD` only take effect the first time
+  the database volume is created.** Changing it later leaves the application unable to authenticate;
   `make clean` first, then change it.
 
 The file is gitignored: it holds this machine's secret key and administrator
@@ -153,10 +155,28 @@ immediately as a `ModuleNotFoundError` on startup.
 
 ## Database
 
-The stack runs PostgreSQL. Production runs MySQL, and the image installs both
-drivers, so you can point `DATABASE_URL` at a MySQL server to rehearse the
-production path. The application keeps its schema inside the portable subset and
-its CI runs the suite against both engines.
+The stack runs PostgreSQL by default. Production runs MySQL, and the image
+installs both drivers. The application keeps its schema inside the portable
+subset and its CI runs the suite against both engines.
+
+To run the stack on MySQL 8.0 instead, uncomment this line in `.env`:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.mysql.yml
+```
+
+and run `make down && make up`. Compose reads `COMPOSE_FILE` from `.env` on its
+own, so every `make` target picks up the override without further flags. The
+override (`docker-compose.mysql.yml`) replaces the `db` service and points
+`web` and `worker` at it. Migrations run on the first start, as they do on
+PostgreSQL. It needs Docker Compose 2.24.4 or later, which `make check`
+verifies.
+
+Each engine has its own volume, `pgdata` or `mysqldata`, so switching does not
+lose the other engine's data. Comment the line out again and `make down && make
+up` to go back. `make clean` removes the volumes of whichever engines the
+current `.env` declares: both while the override is on, only `pgdata` when it is
+off, so clean with the override on if you want its data gone too.
 
 ## Rehearsing the migration
 

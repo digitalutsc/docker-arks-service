@@ -1,6 +1,9 @@
 # Dev and prototype stack for the ARK service: gunicorn, a Celery worker,
 # Redis and PostgreSQL.
 #
+# docker-compose.mysql.yml swaps PostgreSQL for MySQL 8.0, the production
+# engine; set COMPOSE_FILE in .env to use it (see README.md, "Database").
+#
 # The application source lives in its own repository. ARKS_SRC (see .env)
 # points at that checkout and it is wired in below as the named build context
 # `src`; the Dockerfile takes what it needs from there. `make up` writes
