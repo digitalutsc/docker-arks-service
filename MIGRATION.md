@@ -14,8 +14,10 @@ here.
 
 PostgreSQL is a fair rehearsal because the schema stays inside the portable
 subset both engines share, and CI runs the whole suite against each. What it
-cannot tell you is how MySQL will sort or compare a particular string, so the
-dry run on the VM is still the last word.
+cannot tell you is how MySQL will sort or compare a particular string. For that,
+switch the stack to MySQL 8.0 first (see "Database" in [README.md](README.md))
+and rehearse there. The dry run on the VM is still the last word, since its
+server version and collation may differ.
 
 ## 1. Get the export
 

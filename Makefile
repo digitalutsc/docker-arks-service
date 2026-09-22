@@ -60,6 +60,13 @@ build: env check src ## Build the application image
 check: ## Check that Docker and Compose v2 are there
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed."; exit 1; }
 	@$(COMPOSE) version >/dev/null 2>&1 || { echo "docker compose v2 is required."; exit 1; }
+	@# The MySQL override uses !override, which older Compose rejects with a
+	@# parse error that does not say why.
+	@case "$(call ENVGET,COMPOSE_FILE)" in *mysql*) \
+	  v=$$($(COMPOSE) version --short 2>/dev/null | sed 's/^v//'); \
+	  echo "$$v" | awk -F. '{ exit !($$1 > 2 || ($$1 == 2 && ($$2 > 24 || ($$2 == 24 && $$3 + 0 >= 4)))) }' \
+	    || { echo "docker-compose.mysql.yml needs Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
+	esac
 
 env: ## Create .env if absent and fill in the application path and any blank secrets
 	@./scripts/ensure-env.sh
