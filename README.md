@@ -39,9 +39,7 @@ arks-redesign/                      docker-arks-service/    this repository, alo
 ```
 
 A checkout beside this one is used where it is. Without one, the application is
-cloned into `src/arks-service` inside this repository. The application
-repository was called `arks-service-new` until 2026-10-30; a checkout beside
-this one under that name is still found, and GitHub redirects the old URL. Anywhere else works
+cloned into `src/arks-service` inside this repository. Anywhere else works
 too — set `ARKS_SRC` in `.env` yourself.
 
 ## Usage
@@ -97,7 +95,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service` (or `../arks-service-new`, the old name) if one is there, otherwise `./src/arks-service` |
+| `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service` if one is there, otherwise `./src/arks-service` |
 | `ARKS_REPO` | empty | Where to clone the application from when `ARKS_SRC` has nothing in it. Empty means the same host and organisation this repository was cloned from |
 | `ARKS_REF` | empty | Branch or tag to clone. Empty means the default branch |
 | `ARKS_PORT` | `8000` | Host port the stack listens on |

@@ -78,14 +78,10 @@ fill_if_blank() {
 # Where the application checkout is. Resolved once and written back, because
 # Compose reads .env too and the two must agree on the path. A checkout beside
 # this one is used where it is; otherwise the source goes inside this
-# repository, under the gitignored src/, where `make src` clones it. The
-# application repository was called arks-service-new until 2026-10-30, so a
-# checkout beside this one under that name is still found.
+# repository, under the gitignored src/, where `make src` clones it.
 if [ -z "$(current_value ARKS_SRC)" ]; then
     if [ -f ../arks-service/manage.py ]; then
         src=../arks-service
-    elif [ -f ../arks-service-new/manage.py ]; then
-        src=../arks-service-new
     else
         src=./src/arks-service
     fi
