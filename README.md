@@ -1,7 +1,7 @@
 # docker-arks-service
 
 The Docker deployment of the
-[ARK service](https://github.com/digitalutsc/arks-service-new). It contains no
+[ARK service](https://github.com/digitalutsc/arks-service). It contains no
 application code: the source stays in its own repository and this stack builds
 an image from it, cloning that repository first if you do not have it.
 
@@ -34,12 +34,14 @@ The application checkout can be in either of two places, and the first
 
 ```
 arks-redesign/                      docker-arks-service/    this repository, alone
-├── arks-service-new/               └── src/
-└── docker-arks-service/                └── arks-service-new/   cloned for you, gitignored
+├── arks-service/                   └── src/
+└── docker-arks-service/                └── arks-service/   cloned for you, gitignored
 ```
 
 A checkout beside this one is used where it is. Without one, the application is
-cloned into `src/arks-service-new` inside this repository. Anywhere else works
+cloned into `src/arks-service` inside this repository. The application
+repository was called `arks-service-new` until 2026-10-30; a checkout beside
+this one under that name is still found, and GitHub redirects the old URL. Anywhere else works
 too — set `ARKS_SRC` in `.env` yourself.
 
 ## Usage
@@ -67,7 +69,7 @@ The code is baked into the image, so neither editing the checkout nor pulling it
 changes what is running until the image is rebuilt:
 
 ```bash
-git -C src/arks-service-new pull     # or wherever ARKS_SRC points
+git -C src/arks-service pull     # or wherever ARKS_SRC points
 make install
 ```
 
@@ -95,7 +97,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service-new` if one is there, otherwise `./src/arks-service-new` |
+| `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service` (or `../arks-service-new`, the old name) if one is there, otherwise `./src/arks-service` |
 | `ARKS_REPO` | empty | Where to clone the application from when `ARKS_SRC` has nothing in it. Empty means the same host and organisation this repository was cloned from |
 | `ARKS_REF` | empty | Branch or tag to clone. Empty means the default branch |
 | `ARKS_PORT` | `8000` | Host port the stack listens on |
@@ -139,7 +141,7 @@ build as a named context:
 build:
   context: .                                  # this repository, for the Dockerfile
   additional_contexts:
-    src: ${ARKS_SRC:-../arks-service-new}     # the application
+    src: ${ARKS_SRC:-../arks-service}     # the application
 ```
 
 The Dockerfile then copies from `src` one explicit line per top-level package,
@@ -192,7 +194,7 @@ that could not be carried over exactly as legacy held them.
 
 Full walk-through in [MIGRATION.md](MIGRATION.md); what the migration actually
 does, and the real cutover runbook, are in
-[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service-new/blob/main/MIGRATION.md).
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/MIGRATION.md).
 
 A legacy export holds staff passwords in a form that can be decrypted. Keep it
 out of both checkouts and delete it when you are done.
