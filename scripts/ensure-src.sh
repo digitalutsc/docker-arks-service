@@ -8,7 +8,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-DEFAULT_REPO=https://github.com/digitalutsc/arks-service-new.git
+DEFAULT_REPO=https://github.com/digitalutsc/arks-service.git
 
 current_value() {
     sed -n "s/^$1=//p" .env 2>/dev/null | tr -d '\r' | tail -1
@@ -30,7 +30,7 @@ fi
 if [ -e "$src" ] && { [ ! -d "$src" ] || [ -n "$(ls -A "$src")" ]; }; then
     echo "No application checkout at $src (there is no $src/manage.py)," >&2
     echo "and it is not empty, so nothing will be cloned over it." >&2
-    echo "Set ARKS_SRC in ./.env to where the arks-service-new checkout is." >&2
+    echo "Set ARKS_SRC in ./.env to where the arks-service checkout is." >&2
     exit 1
 fi
 
@@ -49,7 +49,7 @@ if [ -z "$repo" ]; then
     # name in a directory above it as well. An origin the swap does not change
     # is a fork or a rename, and says nothing about where the application is.
     repo=$(printf '%s' "$origin" \
-        | sed 's#docker-arks-service\(\.git\)\{0,1\}/*$#arks-service-new\1#')
+        | sed 's#docker-arks-service\(\.git\)\{0,1\}/*$#arks-service\1#')
     if [ "$repo" = "$origin" ]; then
         repo=$DEFAULT_REPO
     fi

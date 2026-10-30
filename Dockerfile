@@ -2,7 +2,7 @@
 #
 # The application source is NOT in this repository. It arrives through the
 # named build context `src`, which docker-compose.yml points at the
-# arks-service-new checkout (ARKS_SRC in .env). Everything taken from it is
+# arks-service checkout (ARKS_SRC in .env). Everything taken from it is
 # listed explicitly below, so nothing from a developer's working tree — .venv,
 # .git, db.sqlite3, staticfiles — can leak into the image.
 #
@@ -32,7 +32,7 @@ RUN uv sync --no-install-project --no-dev --extra postgres --extra mysql --froze
     || uv sync --no-install-project --no-dev --extra postgres --extra mysql
 
 # The application itself, one line per top-level package. Adding a new Django
-# app to arks-service-new means adding a line here — that is the price of
+# app to arks-service means adding a line here — that is the price of
 # keeping the application repository free of deployment files.
 COPY --from=src manage.py ./
 COPY --from=src arkservice/ arkservice/
