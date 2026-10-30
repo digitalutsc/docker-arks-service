@@ -38,7 +38,19 @@ help: ## Show this help
 # there is none, and an existing administrator keeps its password.
 up: env check src ## Bring the whole stack up, from nothing if need be
 	@docker image inspect $(IMAGE) >/dev/null 2>&1 || $(COMPOSE) build --pull
-	@$(COMPOSE) up -d --wait
+	@$(COMPOSE) up -d --wait || { \
+	  echo; \
+	  echo "  The stack did not become healthy in time. A first start can take several"; \
+	  echo "  minutes: MySQL sets up its volume, then web runs the migrations before it"; \
+	  echo "  answers its health check. Nothing has been undone; the containers keep going."; \
+	  echo; \
+	  echo "    docker compose ps                # which service is unhealthy"; \
+	  echo "    docker compose logs -f db web    # wait for web's \"Listening at\", then Ctrl-C"; \
+	  echo "    make up                          # then run this again; it is safe to repeat"; \
+	  echo; \
+	  echo "  An error or a Traceback in those logs is a real failure, not slowness."; \
+	  echo; \
+	  exit 1; }
 	@$(MAKE) --no-print-directory admin
 	@$(MAKE) --no-print-directory info
 
