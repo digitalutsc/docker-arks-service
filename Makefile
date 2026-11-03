@@ -24,11 +24,15 @@ REPORT ?= import-report.csv
 # creates .env during its own run, long after this file has been read.
 ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -1)
 
-# Compose interpolates the mandatory DJANGO_SECRET_KEY for every command it
-# runs, tearing down included. Taking the stack apart should not depend on a
-# .env that may be blank or gone, so teardown supplies a throwaway value; it
-# reaches no container, because down starts none.
-TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down
+# Compose interpolates every mandatory value for every command it runs,
+# tearing down included: DJANGO_SECRET_KEY always, and MYSQL_HOST and
+# MYSQL_PASSWORD under docker-compose.external-db.yml. Taking the stack apart
+# should not depend on a .env that may be blank or gone, so teardown supplies
+# throwaway values; they reach no container and no server, because down starts
+# nothing and connects to nothing.
+TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down \
+                MYSQL_HOST=unused-while-tearing-the-stack-down \
+                MYSQL_PASSWORD=unused-while-tearing-the-stack-down
 
 help: ## Show this help
 	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -41,8 +45,9 @@ up: env check src ## Bring the whole stack up, from nothing if need be
 	@$(COMPOSE) up -d --wait || { \
 	  echo; \
 	  echo "  The stack did not become healthy in time. A first start can take several"; \
-	  echo "  minutes: MySQL sets up its volume, then web runs the migrations before it"; \
-	  echo "  answers its health check. Nothing has been undone; the containers keep going."; \
+	  echo "  minutes: a MySQL container sets up its volume, then web runs the migrations"; \
+	  echo "  before it answers its health check. Against an external database, web waits"; \
+	  echo "  until it can reach that server. Nothing has been undone; the containers keep going."; \
 	  echo; \
 	  echo "    docker compose ps                # which service is unhealthy"; \
 	  echo "    docker compose logs -f db web    # wait for web's \"Listening at\", then Ctrl-C"; \
@@ -63,6 +68,7 @@ clean: ## Remove the stack entirely: containers, volumes and the built image
 	@$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans
 	@docker image rm -f $(IMAGE) >/dev/null 2>&1 || true
 	@echo "Stack removed. .env was kept: it holds this machine's secret key and admin password."
+	@echo "An external database (docker-compose.external-db.yml) is never touched by clean."
 
 rebuild: clean install ## Blow the stack away and install it again from scratch
 
@@ -72,12 +78,12 @@ build: env check src ## Build the application image
 check: ## Check that Docker and Compose v2 are there
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed."; exit 1; }
 	@$(COMPOSE) version >/dev/null 2>&1 || { echo "docker compose v2 is required."; exit 1; }
-	@# The MySQL override uses !override, which older Compose rejects with a
-	@# parse error that does not say why.
-	@case "$(call ENVGET,COMPOSE_FILE)" in *mysql*) \
+	@# The MySQL and external-database overrides use !override, which older
+	@# Compose rejects with a parse error that does not say why.
+	@case "$(call ENVGET,COMPOSE_FILE)" in *mysql*|*external*) \
 	  v=$$($(COMPOSE) version --short 2>/dev/null | sed 's/^v//'); \
 	  echo "$$v" | awk -F. '{ exit !($$1 > 2 || ($$1 == 2 && ($$2 > 24 || ($$2 == 24 && $$3 + 0 >= 4)))) }' \
-	    || { echo "docker-compose.mysql.yml needs Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
+	    || { echo "docker-compose.mysql.yml and docker-compose.external-db.yml need Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
 	esac
 
 env: ## Create .env if absent and fill in the application path and any blank secrets
@@ -123,6 +129,10 @@ manage: ## Run a management command: make manage ARGS="mint utsc 10"
 
 # The export never enters the image: it is copied into the running container,
 # read, and removed again. Nothing is mounted, so the file can live anywhere.
+#
+# It imports into whatever database the stack is pointed at. Under
+# docker-compose.external-db.yml that is the external server, so a real run
+# writes real data there; rehearse with ARGS="--dry-run" first.
 #
 # It goes to /data rather than /tmp because `docker compose cp` writes as root
 # while the container runs unprivileged, and /tmp is sticky — the application

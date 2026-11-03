@@ -1,0 +1,50 @@
+# Opt-in override for production: run the stack against an existing MySQL
+# server instead of a database container. Enable it by setting this in .env,
+# which Compose (and therefore every make target) reads on its own:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml
+#
+# and filling in MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER and
+# MYSQL_PASSWORD. Append :docker-compose.valkey.yml to run Valkey as well.
+#
+# This is an alternative to docker-compose.mysql.yml, not an addition to it:
+# that file runs MySQL in a container, this one points at a server you already
+# have. Development keeps using the container.
+#
+# What changes:
+#   - db is never created or started. An override file cannot delete a
+#     service, so it is parked in a profile nothing activates.
+#   - web and worker no longer wait for db. They still wait for redis, and the
+#     worker still waits for web, which runs the migrations.
+#   - DATABASE_URL is built from the MYSQL_* values. web runs `migrate` on
+#     every start, so the schema on that server is brought up to date by the
+#     stack, exactly as `manage.py migrate` does in a bare deployment.
+#
+# The stack's health check (/healthz) proves the external server is reachable;
+# `make up` reports the stack ready only once it is.
+#
+# MYSQL_HOST and MYSQL_PASSWORD have no default on purpose: a missing value
+# stops Compose with a message instead of quietly looking for a host named db.
+# The password goes into a URL, so use letters and digits, or percent-encode
+# anything else (@ as %40, / as %2F, # as %23, % as %25).
+#
+# The !override tags need Docker Compose 2.24.4 or later; `make check` says so.
+
+services:
+  db:
+    profiles: ["local-db-disabled"]
+
+  # The base file shares its environment through a YAML anchor, which is
+  # expanded before the files are merged, so both services are overridden.
+  web:
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+    depends_on: !override
+      redis: {condition: service_healthy}
+
+  worker:
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+    depends_on: !override
+      redis: {condition: service_healthy}
+      web: {condition: service_healthy}

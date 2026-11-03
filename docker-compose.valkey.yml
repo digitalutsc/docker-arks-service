@@ -1,0 +1,27 @@
+# Opt-in override: run Valkey instead of Redis as the Celery broker and the
+# cache. Enable it by appending it to COMPOSE_FILE in .env, after whichever
+# database files are in use, for example:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.valkey.yml
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.valkey.yml
+#
+# Remove it again to go back to Redis, which stays the default.
+#
+# Valkey speaks the Redis protocol, so the application is unchanged: it keeps
+# its redis:// URLs, Django's RedisCache and Celery's Redis transport. The
+# service also keeps the name `redis`. That name is the role, not the
+# product, and keeping it leaves the URLs and every depends_on in the base
+# file valid.
+#
+# Neither service has a volume, so switching loses only redirect counts that
+# have not been flushed to the database yet. On a live system run
+# `make manage ARGS="flush_counters"` first.
+#
+# Compose replaces image and healthcheck.test wholesale when merging, so this
+# file needs no !override and no particular Compose version.
+
+services:
+  redis:
+    image: valkey/valkey:8-alpine
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]

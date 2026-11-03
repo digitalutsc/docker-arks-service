@@ -1,8 +1,10 @@
-# Dev and prototype stack for the ARK service: gunicorn, a Celery worker,
-# Redis and PostgreSQL.
+# The ARK service stack: gunicorn, a Celery worker, Redis and PostgreSQL.
+# This file alone is the development default.
 #
-# docker-compose.mysql.yml swaps PostgreSQL for MySQL 8.0, the production
-# engine; set COMPOSE_FILE in .env to use it (see README.md, "Database").
+# Overrides, chosen with COMPOSE_FILE in .env (see README.md):
+#   docker-compose.mysql.yml        MySQL 8.0 container instead of PostgreSQL
+#   docker-compose.external-db.yml  production: an existing MySQL server, no db container
+#   docker-compose.valkey.yml       Valkey instead of Redis
 #
 # The application source lives in its own repository. ARKS_SRC (see .env)
 # points at that checkout and it is wired in below as the named build context
@@ -31,6 +33,8 @@ services:
     # POSTGRES_PASSWORD in .env to something of your own if you do.
     # ports: ["5432:5432"]
 
+  # The name is the role, not the product: docker-compose.valkey.yml runs
+  # Valkey under the same name, so the URLs below hold for either.
   redis:
     image: redis:7-alpine
     healthcheck:

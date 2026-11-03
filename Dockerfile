@@ -6,8 +6,10 @@
 # listed explicitly below, so nothing from a developer's working tree — .venv,
 # .git, db.sqlite3, staticfiles — can leak into the image.
 #
-# Production does not use this image. It runs bare on the LAMP VM against the
-# existing MySQL server; see DEPLOY.md in the application repository.
+# The same image serves development and production. In production the stack
+# points it at an existing MySQL server (docker-compose.external-db.yml);
+# production can also run without Docker, as DEPLOY.md in the application
+# repository describes.
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \

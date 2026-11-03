@@ -5,8 +5,10 @@ can see exactly what the migration will do before it happens anywhere that
 matters. Nothing here ever touches the legacy service, and `make clean` puts you
 back to nothing.
 
-**Production does not use Docker.** It runs bare on the LAMP VM against MySQL.
-The rules the importer applies, the review report and the real cutover runbook
+**Rehearse against a database container, never against production.** In
+production the stack may point at an external MySQL server
+(`docker-compose.external-db.yml`); with that override on, `make import-dump`
+writes there. Rehearse with the override off. The rules the importer applies, the review report and the real cutover runbook
 all live in
 [`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/MIGRATION.md) — read
 that one for what the migration *means*. This page is only about driving it
