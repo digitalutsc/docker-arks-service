@@ -5,7 +5,7 @@
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml
 #
 # and filling in MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER and
-# MYSQL_PASSWORD. Append :docker-compose.valkey.yml to run Valkey as well.
+# MYSQL_PASSWORD. The broker is chosen separately, with BROKER_IMAGE.
 #
 # This is an alternative to docker-compose.mysql.yml, not an addition to it:
 # that file runs MySQL in a container, this one points at a server you already

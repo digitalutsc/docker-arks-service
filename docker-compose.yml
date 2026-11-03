@@ -1,10 +1,12 @@
-# The ARK service stack: gunicorn, a Celery worker, Redis and PostgreSQL.
+# The ARK service stack: gunicorn, a Celery worker, Valkey and PostgreSQL.
 # This file alone is the development default.
 #
-# Overrides, chosen with COMPOSE_FILE in .env (see README.md):
+# Database overrides, chosen with COMPOSE_FILE in .env (see README.md):
 #   docker-compose.mysql.yml        MySQL 8.0 container instead of PostgreSQL
 #   docker-compose.external-db.yml  production: an existing MySQL server, no db container
-#   docker-compose.valkey.yml       Valkey instead of Redis
+#
+# The broker and cache is Valkey unless BROKER_IMAGE in .env says otherwise;
+# BROKER_IMAGE=redis:7-alpine runs Redis instead.
 #
 # The application source lives in its own repository. ARKS_SRC (see .env)
 # points at that checkout and it is wired in below as the named build context
@@ -33,10 +35,16 @@ services:
     # POSTGRES_PASSWORD in .env to something of your own if you do.
     # ports: ["5432:5432"]
 
-  # The name is the role, not the product: docker-compose.valkey.yml runs
-  # Valkey under the same name, so the URLs below hold for either.
+  # Broker and cache. Valkey by default; BROKER_IMAGE in .env picks another
+  # Redis-protocol server, such as redis:7-alpine. The application is the same
+  # either way: it talks the Redis protocol over redis:// URLs.
+  #
+  # The service is called redis because that is the protocol, and the URLs
+  # below and every depends_on use the name. The healthcheck calls redis-cli,
+  # which the Valkey image also provides (as a link to valkey-cli), so it
+  # holds for both.
   redis:
-    image: redis:7-alpine
+    image: ${BROKER_IMAGE:-valkey/valkey:8-alpine}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

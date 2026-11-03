@@ -18,7 +18,7 @@ Production can also still run bare on a VM without Docker, as described in
 |---|---|---|
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
 | `worker` | the same image | Celery worker and beat, for bulk-bind jobs and counter flushes |
-| `redis` | `redis:7-alpine`, or `valkey/valkey:8-alpine` with the [Valkey override](#broker-and-cache-redis-or-valkey) | Celery broker, login throttle, redirect-counter cache |
+| `redis` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis) | Celery broker, login throttle, redirect-counter cache |
 | `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database). Not started at all with the [external database override](#production-an-external-mysql-server) | the database |
 
 Only `web` publishes a port. Data lives in two named volumes, `pgdata` (or
@@ -104,7 +104,8 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
 | `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
-| `COMPOSE_FILE` | commented out | Which overrides to use: MySQL container, external MySQL, Valkey. Commented out means PostgreSQL and Redis. See [Database](#database) and [Broker and cache](#broker-and-cache-redis-or-valkey) |
+| `COMPOSE_FILE` | commented out | Which database override to use: MySQL container or external MySQL. Commented out means a PostgreSQL container. See [Database](#database) |
+| `BROKER_IMAGE` | commented out | The broker and cache image. Commented out means Valkey; `redis:7-alpine` runs Redis. See [Broker and cache](#broker-and-cache-valkey-or-redis) |
 | `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network. Set it before the first install |
 | `MYSQL_PASSWORD` | `ark` | The same, for the MySQL container, which also uses it as the root password unless `MYSQL_ROOT_PASSWORD` is set. With an external server, the password of `MYSQL_USER` there |
 | `MYSQL_HOST` | empty | External server only, and required there: the MySQL endpoint |
@@ -194,7 +195,7 @@ In production the stack runs against a MySQL server you already have, and
 starts no database container. Set this in `.env`:
 
 ```
-COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.valkey.yml
+COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml
 MYSQL_HOST=mysql.example.utoronto.ca
 MYSQL_PORT=3306
 MYSQL_DATABASE=ark
@@ -202,8 +203,8 @@ MYSQL_USER=ark
 MYSQL_PASSWORD=...
 ```
 
-Drop `:docker-compose.valkey.yml` to run Redis instead; see
-[Broker and cache](#broker-and-cache-redis-or-valkey). Then run `make up`.
+Then run `make up`. The broker is Valkey unless `BROKER_IMAGE` says otherwise;
+see [Broker and cache](#broker-and-cache-valkey-or-redis).
 
 - **The database must already exist**, and `MYSQL_USER` must be allowed to
   create and alter tables in it. The stack does not create databases or
@@ -234,22 +235,25 @@ use one or the other. It needs Docker Compose 2.24.4 or later, which
 with TLS yet; that is planned separately in `DOCKER-DEPLOY.md` at the
 workspace root.
 
-## Broker and cache: Redis or Valkey
+## Broker and cache: Valkey or Redis
 
-The `redis` service is the Celery broker and the shared cache. It runs Redis
-by default. To run [Valkey](https://valkey.io), the open-source fork, instead,
-append the override to `COMPOSE_FILE` in `.env`, after any database file:
+The `redis` service is the Celery broker and the shared cache. It runs
+[Valkey](https://valkey.io), the open-source fork of Redis, by default. To
+run Redis instead, set this in `.env`:
 
 ```
-COMPOSE_FILE=docker-compose.yml:docker-compose.valkey.yml
+BROKER_IMAGE=redis:7-alpine
 ```
 
-and run `make down && make up`. Remove it again to go back.
+and run `make down && make up`. Comment it out again to go back to Valkey.
 
 The application does not change. Valkey speaks the Redis protocol, so the
 `redis://` URLs, Django's `RedisCache` and Celery's Redis transport all work
-with it. The service keeps the name `redis` because the name describes the
-role, which keeps every URL and `depends_on` valid.
+with it. The service is called `redis` after the protocol, and every URL and
+`depends_on` uses that name, so it stays the same whichever server runs. The
+healthcheck runs `redis-cli ping`, which works on both, because the Valkey
+image ships `redis-cli` as a link to `valkey-cli`. Any other image works if it
+speaks the protocol and provides `redis-cli`.
 
 Neither service keeps a volume, so switching loses only the redirect counts
 not yet written to the database. On a live system flush them first:
