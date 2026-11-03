@@ -1,4 +1,4 @@
-# The dev and prototype image for the ARK service.
+# The image for the ARK service, used by the stack in development and production.
 #
 # The application source is NOT in this repository. It arrives through the
 # named build context `src`, which docker-compose.yml points at the

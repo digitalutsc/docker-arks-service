@@ -18,7 +18,7 @@ Production can also still run bare on a VM without Docker, as described in
 |---|---|---|
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
 | `worker` | the same image | Celery worker and beat, for bulk-bind jobs and counter flushes |
-| `redis` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis) | Celery broker, login throttle, redirect-counter cache |
+| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis) | Celery queue for bulk binds and the counter flush; cache for the login throttle, resolved targets and redirect counts |
 | `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database). Not started at all with the [external database override](#production-an-external-mysql-server) | the database |
 
 Only `web` publishes a port. Data lives in two named volumes, `pgdata` (or
@@ -237,9 +237,14 @@ workspace root.
 
 ## Broker and cache: Valkey or Redis
 
-The `redis` service is the Celery broker and the shared cache. It runs
-[Valkey](https://valkey.io), the open-source fork of Redis, by default. To
-run Redis instead, set this in `.env`:
+The `broker` service is the Celery queue and the shared cache. A bulk-bind
+upload is saved as a job in the database and queued here; the worker takes it
+from the queue and runs it. The scheduled flush of redirect counts goes the
+same way. As the cache it holds the login throttle, the resolved-target cache
+and redirect counts not yet written to the database.
+
+It runs [Valkey](https://valkey.io), the open-source fork of Redis, by
+default. To run Redis instead, set this in `.env`:
 
 ```
 BROKER_IMAGE=redis:7-alpine
@@ -247,13 +252,27 @@ BROKER_IMAGE=redis:7-alpine
 
 and run `make down && make up`. Comment it out again to go back to Valkey.
 
-The application does not change. Valkey speaks the Redis protocol, so the
-`redis://` URLs, Django's `RedisCache` and Celery's Redis transport all work
-with it. The service is called `redis` after the protocol, and every URL and
-`depends_on` uses that name, so it stays the same whichever server runs. The
-healthcheck runs `redis-cli ping`, which works on both, because the Valkey
+The application does not change. Valkey speaks the Redis protocol, so Django's
+`RedisCache` and Celery's Redis transport work with it, and the URLs keep the
+`redis://` scheme with `broker` as the host. Database 0 is the queue and
+database 1 the cache; `docker-compose.yml` sets both:
+
+```
+CELERY_BROKER_URL=redis://broker:6379/0
+REDIS_URL=redis://broker:6379/1
+```
+
+The healthcheck runs `redis-cli ping`, which works on both, because the Valkey
 image ships `redis-cli` as a link to `valkey-cli`. Any other image works if it
-speaks the protocol and provides `redis-cli`.
+speaks the protocol and provides `redis-cli`. To talk to the server by hand:
+
+```
+docker compose exec broker redis-cli INFO server
+```
+
+The service used to be called `redis`. `make up` and `make down` remove
+containers of services the files no longer define, so the old
+`arkservice-redis-1` container goes away on the first `make up` after updating.
 
 Neither service keeps a volume, so switching loses only the redirect counts
 not yet written to the database. On a live system flush them first:

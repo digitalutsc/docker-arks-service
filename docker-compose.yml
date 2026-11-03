@@ -35,15 +35,15 @@ services:
     # POSTGRES_PASSWORD in .env to something of your own if you do.
     # ports: ["5432:5432"]
 
-  # Broker and cache. Valkey by default; BROKER_IMAGE in .env picks another
-  # Redis-protocol server, such as redis:7-alpine. The application is the same
-  # either way: it talks the Redis protocol over redis:// URLs.
+  # Broker and cache: the Celery queue for bulk binds and the scheduled
+  # counter flush, plus the shared cache. Valkey by default; BROKER_IMAGE in
+  # .env picks another Redis-protocol server, such as redis:7-alpine. The
+  # application is the same either way: it talks the Redis protocol, so its
+  # URLs below keep the redis:// scheme while the host is this service.
   #
-  # The service is called redis because that is the protocol, and the URLs
-  # below and every depends_on use the name. The healthcheck calls redis-cli,
-  # which the Valkey image also provides (as a link to valkey-cli), so it
-  # holds for both.
-  redis:
+  # The healthcheck calls redis-cli, which the Valkey image also provides (as a
+  # link to valkey-cli), so it holds for both.
+  broker:
     image: ${BROKER_IMAGE:-valkey/valkey:8-alpine}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -61,8 +61,9 @@ services:
              gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --access-logfile -"
     environment: &env
       DATABASE_URL: postgres://ark:${POSTGRES_PASSWORD:-ark}@db:5432/ark
-      CELERY_BROKER_URL: redis://redis:6379/0
-      REDIS_URL: redis://redis:6379/1
+      # Database 0 is the Celery queue, database 1 the cache.
+      CELERY_BROKER_URL: redis://broker:6379/0
+      REDIS_URL: redis://broker:6379/1
       # No default: bringing the stack up should fail loudly rather than run
       # with session cookies anyone can forge. `make up` generates one.
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make up` (or `make env`) to generate one in .env}
@@ -91,7 +92,7 @@ services:
       start_period: 30s
     depends_on:
       db: {condition: service_healthy}
-      redis: {condition: service_healthy}
+      broker: {condition: service_healthy}
 
   worker:
     # No build section: the worker runs the same image web builds, so the
@@ -102,7 +103,7 @@ services:
     volumes: [media:/data/media]
     depends_on:
       db: {condition: service_healthy}
-      redis: {condition: service_healthy}
+      broker: {condition: service_healthy}
       # web runs the migrations, so the worker waits for it rather than racing
       # a half-built schema on a first install.
       web: {condition: service_healthy}

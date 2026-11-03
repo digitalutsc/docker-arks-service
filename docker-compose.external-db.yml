@@ -14,7 +14,7 @@
 # What changes:
 #   - db is never created or started. An override file cannot delete a
 #     service, so it is parked in a profile nothing activates.
-#   - web and worker no longer wait for db. They still wait for redis, and the
+#   - web and worker no longer wait for db. They still wait for broker, and the
 #     worker still waits for web, which runs the migrations.
 #   - DATABASE_URL is built from the MYSQL_* values. web runs `migrate` on
 #     every start, so the schema on that server is brought up to date by the
@@ -40,11 +40,11 @@ services:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
     depends_on: !override
-      redis: {condition: service_healthy}
+      broker: {condition: service_healthy}
 
   worker:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
     depends_on: !override
-      redis: {condition: service_healthy}
+      broker: {condition: service_healthy}
       web: {condition: service_healthy}

@@ -42,7 +42,7 @@ help: ## Show this help
 # there is none, and an existing administrator keeps its password.
 up: env check src ## Bring the whole stack up, from nothing if need be
 	@docker image inspect $(IMAGE) >/dev/null 2>&1 || $(COMPOSE) build --pull
-	@$(COMPOSE) up -d --wait || { \
+	@$(COMPOSE) up -d --wait --remove-orphans || { \
 	  echo; \
 	  echo "  The stack did not become healthy in time. A first start can take several"; \
 	  echo "  minutes: a MySQL container sets up its volume, then web runs the migrations"; \
@@ -61,8 +61,11 @@ up: env check src ## Bring the whole stack up, from nothing if need be
 
 install: build up ## The same as up, but always rebuild the image first
 
+# --remove-orphans here and in up: a container for a service the Compose
+# files no longer define (such as redis, before it was renamed broker) would
+# otherwise keep running beside its replacement.
 down: ## Stop the stack, keeping the data
-	@$(TEARDOWN_ENV) $(COMPOSE) down
+	@$(TEARDOWN_ENV) $(COMPOSE) down --remove-orphans
 
 clean: ## Remove the stack entirely: containers, volumes and the built image
 	@$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans
