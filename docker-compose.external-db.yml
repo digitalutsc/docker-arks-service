@@ -15,7 +15,9 @@
 #   - db is never created or started. An override file cannot delete a
 #     service, so it is parked in a profile nothing activates.
 #   - web and worker no longer wait for db. They still wait for broker, and the
-#     worker still waits for web, which runs the migrations.
+#     worker still waits for web, which runs the migrations. Only that one
+#     dependency is reset, so this file combines with
+#     docker-compose.external-broker.yml in either order.
 #   - DATABASE_URL is built from the MYSQL_* values. web runs `migrate` on
 #     every start, so the schema on that server is brought up to date by the
 #     stack, exactly as `manage.py migrate` does in a bare deployment.
@@ -28,7 +30,7 @@
 # The password goes into a URL, so use letters and digits, or percent-encode
 # anything else (@ as %40, / as %2F, # as %23, % as %25).
 #
-# The !override tags need Docker Compose 2.24.4 or later; `make check` says so.
+# The !reset tags need Docker Compose 2.24.4 or later; `make check` says so.
 
 services:
   db:
@@ -39,12 +41,11 @@ services:
   web:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
-    depends_on: !override
-      broker: {condition: service_healthy}
+    depends_on:
+      db: !reset
 
   worker:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
-    depends_on: !override
-      broker: {condition: service_healthy}
-      web: {condition: service_healthy}
+    depends_on:
+      db: !reset

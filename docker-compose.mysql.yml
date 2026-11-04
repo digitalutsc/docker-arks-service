@@ -13,9 +13,11 @@
 services:
   db:
     image: mysql:8.0
+    # Applied the one time the container initialises its volume, like the
+    # PostgreSQL ones. MYSQL_HOST and MYSQL_PORT are for the external server only.
     environment: !override
-      MYSQL_DATABASE: ark
-      MYSQL_USER: ark
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ark}
+      MYSQL_USER: ${MYSQL_USER:-ark}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ark}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-${MYSQL_PASSWORD:-ark}}
     volumes: !override [mysqldata:/var/lib/mysql]
@@ -23,7 +25,7 @@ services:
     # volume it runs a temporary server with networking off, so the database is
     # not reported healthy until the real server is up.
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u ark -p\"$$MYSQL_PASSWORD\" --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u \"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\" --silent"]
       start_period: 30s
     # Not published, as in the base file. Uncomment only for a client on the host.
     # ports: ["3306:3306"]
@@ -33,11 +35,11 @@ services:
   # Compose merges environment maps key by key; everything else is kept.
   web:
     environment:
-      DATABASE_URL: mysql://ark:${MYSQL_PASSWORD:-ark}@db:3306/ark
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:-ark}@db:3306/${MYSQL_DATABASE:-ark}
 
   worker:
     environment:
-      DATABASE_URL: mysql://ark:${MYSQL_PASSWORD:-ark}@db:3306/ark
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:-ark}@db:3306/${MYSQL_DATABASE:-ark}
 
 volumes:
   mysqldata:

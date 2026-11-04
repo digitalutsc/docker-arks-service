@@ -18,7 +18,7 @@ Production can also still run bare on a VM without Docker, as described in
 |---|---|---|
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
 | `worker` | the same image | Celery worker and beat, for bulk-bind jobs and counter flushes |
-| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis) | Celery queue for bulk binds and the counter flush; cache for the login throttle, resolved targets and redirect counts |
+| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis). Not started at all with the [external broker override](#production-an-external-valkey-or-redis-server) | Celery queue for bulk binds and the counter flush; cache for the login throttle, resolved targets and redirect counts. Password-protected |
 | `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database). Not started at all with the [external database override](#production-an-external-mysql-server) | the database |
 
 Only `web` publishes a port. Data lives in two named volumes, `pgdata` (or
@@ -104,14 +104,22 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
 | `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
-| `COMPOSE_FILE` | commented out | Which database override to use: MySQL container or external MySQL. Commented out means a PostgreSQL container. See [Database](#database) |
-| `BROKER_IMAGE` | commented out | The broker and cache image. Commented out means Valkey; `redis:7-alpine` runs Redis. See [Broker and cache](#broker-and-cache-valkey-or-redis) |
-| `POSTGRES_PASSWORD` | `ark` | Only reachable inside the Compose network. Set it before the first install |
-| `MYSQL_PASSWORD` | `ark` | The same, for the MySQL container, which also uses it as the root password unless `MYSQL_ROOT_PASSWORD` is set. With an external server, the password of `MYSQL_USER` there |
+| `COMPOSE_FILE` | commented out | Which overrides to use: MySQL container, external MySQL, external broker. Commented out means a PostgreSQL container and a Valkey container. See [Database](#database) and [Broker and cache](#broker-and-cache-valkey-or-redis) |
+| `POSTGRES_DB` | `ark` | PostgreSQL container: the database it creates. Set it before the first install |
+| `POSTGRES_USER` | `ark` | PostgreSQL container: the account it creates. Set it before the first install |
+| `POSTGRES_PASSWORD` | `ark` | PostgreSQL container: that account's password. Only reachable inside the Compose network. Set it before the first install |
+| `MYSQL_DATABASE` | `ark` | The database. The MySQL container creates it; an external server must already have it |
+| `MYSQL_USER` | `ark` | The account. The MySQL container creates it; on an external server it must exist and be allowed to create and alter tables in that database |
+| `MYSQL_PASSWORD` | `ark` | That account's password. The MySQL container also uses it as the root password unless `MYSQL_ROOT_PASSWORD` is set |
 | `MYSQL_HOST` | empty | External server only, and required there: the MySQL endpoint |
 | `MYSQL_PORT` | `3306` | External server only |
-| `MYSQL_DATABASE` | `ark` | External server only: the database name. It must already exist |
-| `MYSQL_USER` | `ark` | External server only. Needs to be allowed to create and alter tables in that database |
+| `BROKER_IMAGE` | commented out | The broker container's image. Commented out means Valkey; `redis:7-alpine` runs Redis |
+| `BROKER_PASSWORD` | generated | What clients authenticate with. The broker container enforces it; with an external broker it is that server's password. A deliberately blank line turns authentication off |
+| `BROKER_HOST` | empty | External broker only, and required there: the Valkey or Redis endpoint |
+| `BROKER_PORT` | `6379` | External broker only |
+| `BROKER_USERNAME` | empty | External broker only: a named account (ACL user). Empty logs in as the default user with just the password |
+| `BROKER_QUEUE_DB`, `BROKER_CACHE_DB` | `0`, `1` | External broker only: the database numbers for the Celery queue and the cache. They must differ |
+| `BROKER_SCHEME`, `BROKER_URL_OPTIONS` | `redis`, empty | External broker only. For TLS: `rediss` and `?ssl_cert_reqs=required` |
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
@@ -123,19 +131,24 @@ differently. Two rules keep them agreeing: **comments on their own lines**, and
 inside the value, so a quoted password would create an account whose password
 includes the quotes.
 
-Two variables are less free than they look:
+A few variables are less free than they look:
 
 - **`ARKS_EXTRA_HOSTS` adds to the allowed hosts, it does not replace them.**
   The container healthcheck asks for `localhost`, and Django answers 400 to a
   hostname it does not know, so a stack that dropped `localhost` would never
   become healthy and `make up` would wait forever.
-- **For a database container, `POSTGRES_PASSWORD` and `MYSQL_PASSWORD` only
-  take effect the first time the database volume is created.** Changing it later leaves the application unable to authenticate;
-  `make clean` first, then change it. Against an external server the password
-  is that server's, and changes whenever its account does.
-- **Database passwords are substituted into a URL.** Use letters and digits.
-  An external server's password you cannot choose has to be percent-encoded in
-  `.env`: `@` as `%40`, `/` as `%2F`, `#` as `%23`, `%` as `%25`.
+- **A database container's names and password only take effect the first
+  time its volume is created.** That covers `POSTGRES_DB`, `POSTGRES_USER` and
+  `POSTGRES_PASSWORD`, and the `MYSQL_*` values with the MySQL container.
+  Changing one later leaves the application unable to log in; `make clean`
+  first, then change it. Against an external server the values are that
+  server's, and change whenever its account does.
+- **The broker container applies `BROKER_PASSWORD` on every start.** It keeps
+  no data, so changing the password is safe; `make down && make up` puts the
+  new one into effect for the broker and the application together.
+- **User names and passwords are substituted into URLs.** Use letters and
+  digits. A password you cannot choose has to be percent-encoded in `.env`:
+  `@` as `%40`, `/` as `%2F`, `#` as `%23`, `%` as `%25`, `:` as `%3A`.
 
 The file is gitignored: it holds this machine's secret key and administrator
 password, and is created mode 600. `make clean` deliberately keeps it.
@@ -203,8 +216,8 @@ MYSQL_USER=ark
 MYSQL_PASSWORD=...
 ```
 
-Then run `make up`. The broker is Valkey unless `BROKER_IMAGE` says otherwise;
-see [Broker and cache](#broker-and-cache-valkey-or-redis).
+Then run `make up`. The broker stays a container unless you also add the
+[external broker override](#production-an-external-valkey-or-redis-server).
 
 - **The database must already exist**, and `MYSQL_USER` must be allowed to
   create and alter tables in it. The stack does not create databases or
@@ -255,19 +268,30 @@ and run `make down && make up`. Comment it out again to go back to Valkey.
 The application does not change. Valkey speaks the Redis protocol, so Django's
 `RedisCache` and Celery's Redis transport work with it, and the URLs keep the
 `redis://` scheme with `broker` as the host. Database 0 is the queue and
-database 1 the cache; `docker-compose.yml` sets both:
+database 1 the cache; `docker-compose.yml` sets both, as shown below.
+
+**The broker requires a password.** `make up` generates `BROKER_PASSWORD` in
+`.env` the first time, the container starts with it as its server password,
+and the application's URLs carry it (database 0 the queue, 1 the cache):
 
 ```
-CELERY_BROKER_URL=redis://broker:6379/0
-REDIS_URL=redis://broker:6379/1
+CELERY_BROKER_URL=redis://:<BROKER_PASSWORD>@broker:6379/0
+REDIS_URL=redis://:<BROKER_PASSWORD>@broker:6379/1
 ```
 
-The healthcheck runs `redis-cli ping`, which works on both, because the Valkey
-image ships `redis-cli` as a link to `valkey-cli`. Any other image works if it
-speaks the protocol and provides `redis-cli`. To talk to the server by hand:
+It is the server's default user, so there is no user name. A line set
+deliberately blank, `BROKER_PASSWORD=`, turns authentication off and is left
+blank by `make up`; that only makes sense on a machine nobody else can reach.
+
+The healthcheck runs `redis-cli ping` with that password and looks for `PONG`
+rather than trusting the exit status, because `redis-cli` exits 0 even when
+authentication fails. It works on both servers,
+because the Valkey image ships `redis-cli` as a link to `valkey-cli`. Any
+other image works if it speaks the protocol and provides `redis-cli`. To talk
+to the server by hand, pass the password the same way:
 
 ```
-docker compose exec broker redis-cli INFO server
+docker compose exec broker sh -c 'REDISCLI_AUTH="$BROKER_PASSWORD" redis-cli INFO server'
 ```
 
 The service used to be called `redis`. `make up` and `make down` remove
@@ -280,6 +304,47 @@ not yet written to the database. On a live system flush them first:
 ```
 make manage ARGS="flush_counters"
 ```
+
+### Production: an external Valkey or Redis server
+
+In production the broker can be a server you already have, such as one the
+sysadmin runs or a managed service, instead of the container. Add the
+override to `COMPOSE_FILE`, alone or with the external database, and fill in
+the server's details:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml
+BROKER_HOST=valkey.example.utoronto.ca
+BROKER_PORT=6379
+BROKER_USERNAME=ark
+BROKER_PASSWORD=...
+```
+
+Then run `make up`.
+
+- **The `broker` container is never created**, and `web` and `worker` no
+  longer wait for it. `web` only reports healthy once its `/healthz` check can
+  reach the cache on that server.
+- **Credentials.** Replace the generated `BROKER_PASSWORD` with the server's.
+  Set `BROKER_USERNAME` when the server gives you a named account (an ACL
+  user, as managed services do); leave it blank to log in as the default user
+  with just the password. Leave `BROKER_PASSWORD=` blank only for a server
+  without authentication.
+- **Two database numbers.** The Celery queue uses `BROKER_QUEUE_DB` (0) and
+  the cache `BROKER_CACHE_DB` (1). They must differ, so the server must offer
+  at least two databases; a server in cluster mode offers only one and is not
+  supported.
+- **TLS.** Set `BROKER_SCHEME=rediss` and
+  `BROKER_URL_OPTIONS=?ssl_cert_reqs=required`, usually with the port the
+  server gives for TLS. Celery refuses a `rediss://` URL without
+  `ssl_cert_reqs`.
+- **`BROKER_HOST` has no default.** Compose refuses to start without it.
+- **The containers must be able to reach the server**, as for an external
+  database: `localhost` is the container itself.
+- **`make clean` never touches the external server.**
+
+The external database and broker files combine in either order, and each can
+be used without the other. Like them, it needs Docker Compose 2.24.4 or later.
 
 ## Rehearsing the migration
 
@@ -325,7 +390,15 @@ network.
 
 **Compose refuses to start: `MYSQL_HOST` or `MYSQL_PASSWORD` is missing a
 value.** `.env` turns on `docker-compose.external-db.yml` and leaves that value
-blank. Fill it in, or take the file out of `COMPOSE_FILE`.
+blank. Fill it in, or take the file out of `COMPOSE_FILE`. The same goes for
+`BROKER_HOST` and `docker-compose.external-broker.yml`.
+
+**The broker is unhealthy, or the logs say `NOAUTH`, `WRONGPASS` or
+`invalid username-password pair`.** The password, or the user name, does not
+match the server. With the broker container, run `make down && make up` so
+both sides start with the same `BROKER_PASSWORD`. With an external broker,
+check `BROKER_USERNAME` and `BROKER_PASSWORD` against the server, and that the
+password is percent-encoded.
 
 **`ModuleNotFoundError` for an application package.** A new top-level package
 was added to the application without a matching `COPY --from=src` line in the

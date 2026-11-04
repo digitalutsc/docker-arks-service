@@ -91,3 +91,14 @@ fi
 
 fill_if_blank DJANGO_SECRET_KEY
 fill_if_blank DJANGO_SUPERUSER_PASSWORD
+
+# The broker password is generated only when .env has no BROKER_PASSWORD line
+# at all. A line that is there but blank was put there on purpose (a server
+# without authentication) and is left alone, unlike the two secrets above,
+# which the application cannot run without.
+if ! grep -q '^BROKER_PASSWORD=' .env; then
+    secret=$(generate_secret)
+    printf 'BROKER_PASSWORD=%s\n' "$secret" >> .env
+    chmod 600 .env
+    echo "Generated BROKER_PASSWORD in .env"
+fi

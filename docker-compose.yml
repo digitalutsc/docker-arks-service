@@ -1,12 +1,15 @@
 # The ARK service stack: gunicorn, a Celery worker, Valkey and PostgreSQL.
 # This file alone is the development default.
 #
-# Database overrides, chosen with COMPOSE_FILE in .env (see README.md):
-#   docker-compose.mysql.yml        MySQL 8.0 container instead of PostgreSQL
-#   docker-compose.external-db.yml  production: an existing MySQL server, no db container
+# Overrides, chosen with COMPOSE_FILE in .env (see README.md):
+#   docker-compose.mysql.yml            MySQL 8.0 container instead of PostgreSQL
+#   docker-compose.external-db.yml      production: an existing MySQL server, no db container
+#   docker-compose.external-broker.yml  production: an existing Valkey or Redis server,
+#                                       no broker container
 #
-# The broker and cache is Valkey unless BROKER_IMAGE in .env says otherwise;
-# BROKER_IMAGE=redis:7-alpine runs Redis instead.
+# The broker container runs Valkey unless BROKER_IMAGE in .env says otherwise;
+# BROKER_IMAGE=redis:7-alpine runs Redis instead. It requires BROKER_PASSWORD,
+# which `make up` generates.
 #
 # The application source lives in its own repository. ARKS_SRC (see .env)
 # points at that checkout and it is wired in below as the named build context
@@ -21,13 +24,15 @@ name: arkservice
 services:
   db:
     image: postgres:16-alpine
+    # Applied the one time the container initialises its volume: changing
+    # them later needs `make clean` first. See .env.example.
     environment:
-      POSTGRES_USER: ark
+      POSTGRES_DB: ${POSTGRES_DB:-ark}
+      POSTGRES_USER: ${POSTGRES_USER:-ark}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ark}
-      POSTGRES_DB: ark
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ark"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       retries: 10
     # Not published: the database is reachable from the other containers by
@@ -41,12 +46,22 @@ services:
   # application is the same either way: it talks the Redis protocol, so its
   # URLs below keep the redis:// scheme while the host is this service.
   #
+  # Clients must authenticate with BROKER_PASSWORD (the server's default
+  # user). Both images pass arguments that start with - to their server, so
+  # one command line serves either. A blank password turns authentication
+  # off, which only makes sense on a machine nobody else can reach.
+  #
   # The healthcheck calls redis-cli, which the Valkey image also provides (as a
-  # link to valkey-cli), so it holds for both.
+  # link to valkey-cli), so it holds for both. It looks for PONG rather than
+  # trusting the exit status: redis-cli exits 0 even when authentication fails,
+  # which would report a misconfigured broker healthy.
   broker:
     image: ${BROKER_IMAGE:-valkey/valkey:8-alpine}
+    command: ["--requirepass", "${BROKER_PASSWORD:-}"]
+    environment:
+      BROKER_PASSWORD: ${BROKER_PASSWORD:-}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "if [ -n \"$$BROKER_PASSWORD\" ]; then export REDISCLI_AUTH=\"$$BROKER_PASSWORD\"; fi; redis-cli ping | grep -q PONG"]
       interval: 5s
       retries: 10
 
@@ -60,10 +75,11 @@ services:
       sh -c "python manage.py migrate --no-input &&
              gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --access-logfile -"
     environment: &env
-      DATABASE_URL: postgres://ark:${POSTGRES_PASSWORD:-ark}@db:5432/ark
-      # Database 0 is the Celery queue, database 1 the cache.
-      CELERY_BROKER_URL: redis://broker:6379/0
-      REDIS_URL: redis://broker:6379/1
+      DATABASE_URL: postgres://${POSTGRES_USER:-ark}:${POSTGRES_PASSWORD:-ark}@db:5432/${POSTGRES_DB:-ark}
+      # Database 0 is the Celery queue, database 1 the cache. The password goes
+      # in only when there is one.
+      CELERY_BROKER_URL: redis://${BROKER_PASSWORD:+:$BROKER_PASSWORD@}broker:6379/0
+      REDIS_URL: redis://${BROKER_PASSWORD:+:$BROKER_PASSWORD@}broker:6379/1
       # No default: bringing the stack up should fail loudly rather than run
       # with session cookies anyone can forge. `make up` generates one.
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?run `make up` (or `make env`) to generate one in .env}

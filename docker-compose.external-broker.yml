@@ -1,0 +1,51 @@
+# Opt-in override for production: use an existing Valkey or Redis server as
+# the broker and cache instead of the broker container. Enable it by adding it
+# to COMPOSE_FILE in .env, alone or together with the external database:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-broker.yml
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml
+#
+# and filling in BROKER_HOST and, as the server requires, BROKER_PORT,
+# BROKER_USERNAME and BROKER_PASSWORD.
+#
+# What changes:
+#   - broker is never created or started. An override file cannot delete a
+#     service, so it is parked in a profile nothing activates.
+#   - web and worker no longer wait for broker. Only that one dependency is
+#     reset, so this file combines with docker-compose.external-db.yml in
+#     either order.
+#   - CELERY_BROKER_URL (the Celery queue) and REDIS_URL (the cache) are built
+#     from the BROKER_* values. They use two database numbers on the same
+#     server, BROKER_QUEUE_DB and BROKER_CACHE_DB, which must differ.
+#
+# Credentials: BROKER_USERNAME is for servers with named accounts (ACL users,
+# as managed Valkey and Redis services hand out); leave it blank to log in as
+# the server's default user with just BROKER_PASSWORD. Both go into a URL, so
+# percent-encode anything but letters and digits (@ as %40, / as %2F, # as
+# %23, % as %25, : as %3A).
+#
+# TLS: set BROKER_SCHEME=rediss and BROKER_URL_OPTIONS=?ssl_cert_reqs=required.
+# Celery refuses a rediss:// URL without ssl_cert_reqs.
+#
+# The stack's health check (/healthz) proves the cache on that server answers;
+# `make up` reports the stack ready only once it does.
+#
+# The !reset tags need Docker Compose 2.24.4 or later; `make check` says so.
+
+x-broker-urls: &broker-urls
+  CELERY_BROKER_URL: ${BROKER_SCHEME:-redis}://${BROKER_USERNAME:-}:${BROKER_PASSWORD:-}@${BROKER_HOST:?set BROKER_HOST in .env to the Valkey or Redis server}:${BROKER_PORT:-6379}/${BROKER_QUEUE_DB:-0}${BROKER_URL_OPTIONS:-}
+  REDIS_URL: ${BROKER_SCHEME:-redis}://${BROKER_USERNAME:-}:${BROKER_PASSWORD:-}@${BROKER_HOST:?set BROKER_HOST in .env to the Valkey or Redis server}:${BROKER_PORT:-6379}/${BROKER_CACHE_DB:-1}${BROKER_URL_OPTIONS:-}
+
+services:
+  broker:
+    profiles: ["local-broker-disabled"]
+
+  web:
+    environment: *broker-urls
+    depends_on:
+      broker: !reset
+
+  worker:
+    environment: *broker-urls
+    depends_on:
+      broker: !reset
