@@ -1,0 +1,45 @@
+# Opt-in override: run the stack behind a TLS reverse proxy (Apache) on the
+# same host. Enable it by adding it to COMPOSE_FILE in .env, after the files
+# that choose the database and broker. Production is:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.proxy.yml
+#
+# What changes:
+#   - web publishes its port on 127.0.0.1 only. The proxy on the same host
+#     reaches it there; nothing else can, and Docker's published ports would
+#     otherwise bypass the host firewall.
+#   - The session and CSRF cookies are marked Secure, so the browser only
+#     sends them over HTTPS, as in a bare production deployment.
+#   - TRUST_FORWARDED_FOR defaults to true: the proxy appends the real client
+#     address to X-Forwarded-For, and the loopback-only port means every
+#     request came through it. The login throttle then counts per client
+#     rather than treating every visitor as the proxy.
+#
+# The proxy must preserve the Host header and set X-Forwarded-Proto: https;
+# ARKS_EXTRA_HOSTS must name the public hostname. See README.md.
+#
+# The cookie settings are repeated per service: the base file shares its
+# environment through a YAML anchor, which is expanded before the files are
+# merged, so each service is overridden on its own.
+#
+# The !override tag needs Docker Compose 2.24.4 or later; `make check` says so.
+
+services:
+  web:
+    ports: !override ["127.0.0.1:${ARKS_PORT:-8000}:8000"]
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-true}"
+
+  worker:
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-true}"
+
+  scheduler:
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-true}"

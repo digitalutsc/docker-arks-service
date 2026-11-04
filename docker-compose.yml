@@ -7,6 +7,11 @@
 #   docker-compose.external-db.yml      production: an existing MySQL server, no db container
 #   docker-compose.external-broker.yml  production: an existing Valkey or Redis server,
 #                                       no broker container
+#   docker-compose.proxy.yml            behind a TLS reverse proxy on the same host:
+#                                       loopback-only port, secure cookies
+#
+# Production is all four overrides together:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.proxy.yml
 #
 # The broker container runs Valkey unless BROKER_IMAGE in .env says otherwise;
 # BROKER_IMAGE=redis:7-alpine runs Redis instead. It requires BROKER_PASSWORD,
@@ -22,9 +27,19 @@
 # the volumes.
 name: arkservice
 
+# Every service logs through Docker's json-file driver, capped at five 10 MB
+# files, so a chatty container cannot fill the disk. `make logs` still works.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
     # Applied the one time the container initialises its volume: changing
     # them later needs `make clean` first. See .env.example.
     environment:
@@ -58,6 +73,8 @@ services:
   # which would report a misconfigured broker healthy.
   broker:
     image: ${BROKER_IMAGE:-valkey/valkey:8-alpine}
+    restart: unless-stopped
+    logging: *logging
     command: ["--requirepass", "${BROKER_PASSWORD:-}"]
     environment:
       BROKER_PASSWORD: ${BROKER_PASSWORD:-}
@@ -72,6 +89,8 @@ services:
       context: .
       additional_contexts:
         src: ${ARKS_SRC:-../arks-service}
+    restart: unless-stopped
+    logging: *logging
     command: >
       sh -c "python manage.py migrate --no-input &&
              gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --access-logfile -"
@@ -90,12 +109,44 @@ services:
       # whole list would leave the stack permanently unhealthy, so operators add
       # to it through ARKS_EXTRA_HOSTS instead of overwriting it.
       DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1${ARKS_EXTRA_HOSTS:+,$ARKS_EXTRA_HOSTS}"
+      # Plain HTTP on a workstation. docker-compose.proxy.yml turns both on for
+      # a stack behind TLS.
       SESSION_COOKIE_SECURE: "false"
       CSRF_COOKIE_SECURE: "false"
       MEDIA_ROOT: /data/media
-      # Shared with the worker through the anchor on purpose: bulk bind mints
-      # its blank rows there, and the two must agree on the cap. 0 removes it.
+      # Everything below is passed through from .env, documented in README.md.
+      # A blank default leaves the application's own default in force; the
+      # rest are numbers or booleans, which the application cannot read from a
+      # blank value, so their defaults are spelled out and match the
+      # application's except where a comment says otherwise.
+      #
+      # Behind a proxy: comma-separated https:// origins, only needed when a
+      # form is posted from a different hostname than the one serving it.
+      DJANGO_CSRF_TRUSTED_ORIGINS: "${DJANGO_CSRF_TRUSTED_ORIGINS:-}"
+      # Off here because this file publishes gunicorn's port to the network
+      # directly, where X-Forwarded-For is whatever the client says.
+      # docker-compose.proxy.yml defaults it to true, because Apache appends
+      # the real client address and nothing else can reach the port.
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"
+      SECURE_HSTS_SECONDS: "${SECURE_HSTS_SECONDS:-0}"
+      ARK_PUBLIC_BASE_URL: "${ARK_PUBLIC_BASE_URL:-}"
+      DB_CONN_MAX_AGE: "${DB_CONN_MAX_AGE:-60}"
+      DB_CONNECT_TIMEOUT: "${DB_CONNECT_TIMEOUT:-5}"
+      DB_READ_TIMEOUT: "${DB_READ_TIMEOUT:-60}"
+      DB_WRITE_TIMEOUT: "${DB_WRITE_TIMEOUT:-60}"
+      CACHE_SOCKET_TIMEOUT: "${CACHE_SOCKET_TIMEOUT:-0.5}"
+      # Shared with the worker through the anchor on purpose: the two must
+      # agree on the caps. 0 removes the mint cap.
       MINT_MAX_PER_REQUEST: "${MINT_MAX_PER_REQUEST:-10000}"
+      BULK_BIND_MAX_ROWS: "${BULK_BIND_MAX_ROWS:-100000}"
+      BULK_BIND_MAX_BYTES: "${BULK_BIND_MAX_BYTES:-52428800}"
+      BULK_BIND_RETENTION_DAYS: "${BULK_BIND_RETENTION_DAYS:-0}"
+      CELERY_TASK_TIME_LIMIT: "${CELERY_TASK_TIME_LIMIT:-3600}"
+      MANIFEST_TOTAL_TIMEOUT: "${MANIFEST_TOTAL_TIMEOUT:-10}"
+      MANIFEST_MAX_CONCURRENT: "${MANIFEST_MAX_CONCURRENT:-4}"
+      COLLECTION_STATS_SECONDS: "${COLLECTION_STATS_SECONDS:-300}"
+      SORT_SUBQUERY_MAX_ROWS: "${SORT_SUBQUERY_MAX_ROWS:-50000}"
+      EXPORT_SYNC_MAX_ROWS: "${EXPORT_SYNC_MAX_ROWS:-100000}"
     volumes: [media:/data/media]
     ports: ["${ARKS_PORT:-8000}:8000"]
     # /healthz proves the database and the counter cache are reachable, not
@@ -119,6 +170,8 @@ services:
     # No build section: the worker runs the same image web builds, so the
     # source is compiled into one image rather than two.
     image: arkservice-web:local
+    restart: unless-stopped
+    logging: *logging
     command: celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info
     stop_grace_period: 120s
     environment: *env
@@ -136,6 +189,8 @@ services:
   # running beat twice. Run exactly one.
   scheduler:
     image: arkservice-web:local
+    restart: unless-stopped
+    logging: *logging
     command: celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info
     stop_grace_period: 30s
     environment: *env
