@@ -14,8 +14,9 @@
 # What changes:
 #   - db is never created or started. An override file cannot delete a
 #     service, so it is parked in a profile nothing activates.
-#   - web and worker no longer wait for db. They still wait for broker, and the
-#     worker still waits for web, which runs the migrations. Only that one
+#   - web, worker and scheduler no longer wait for db. They still wait for
+#     broker, and worker and scheduler still wait for web, which runs the
+#     migrations. Only that one
 #     dependency is reset, so this file combines with
 #     docker-compose.external-broker.yml in either order.
 #   - DATABASE_URL is built from the MYSQL_* values. web runs `migrate` on
@@ -37,7 +38,7 @@ services:
     profiles: ["local-db-disabled"]
 
   # The base file shares its environment through a YAML anchor, which is
-  # expanded before the files are merged, so both services are overridden.
+  # expanded before the files are merged, so each service is overridden.
   web:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
@@ -45,6 +46,12 @@ services:
       db: !reset
 
   worker:
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+    depends_on:
+      db: !reset
+
+  scheduler:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
     depends_on:

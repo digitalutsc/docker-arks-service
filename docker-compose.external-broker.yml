@@ -11,7 +11,7 @@
 # What changes:
 #   - broker is never created or started. An override file cannot delete a
 #     service, so it is parked in a profile nothing activates.
-#   - web and worker no longer wait for broker. Only that one dependency is
+#   - web, worker and scheduler no longer wait for broker. Only that one dependency is
 #     reset, so this file combines with docker-compose.external-db.yml in
 #     either order.
 #   - CELERY_BROKER_URL (the Celery queue) and REDIS_URL (the cache) are built
@@ -46,6 +46,11 @@ services:
       broker: !reset
 
   worker:
+    environment: *broker-urls
+    depends_on:
+      broker: !reset
+
+  scheduler:
     environment: *broker-urls
     depends_on:
       broker: !reset

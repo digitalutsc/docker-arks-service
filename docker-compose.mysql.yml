@@ -31,13 +31,17 @@ services:
     # ports: ["3306:3306"]
 
   # The base file shares its environment through a YAML anchor, which is
-  # expanded before the files are merged, so both services are overridden.
+  # expanded before the files are merged, so each service is overridden.
   # Compose merges environment maps key by key; everything else is kept.
   web:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:-ark}@db:3306/${MYSQL_DATABASE:-ark}
 
   worker:
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:-ark}@db:3306/${MYSQL_DATABASE:-ark}
+
+  scheduler:
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:-ark}@db:3306/${MYSQL_DATABASE:-ark}
 

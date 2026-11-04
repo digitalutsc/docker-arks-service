@@ -1,4 +1,5 @@
-# The ARK service stack: gunicorn, a Celery worker, Valkey and PostgreSQL.
+# The ARK service stack: gunicorn, two Celery processes (the worker for
+# bulk-bind jobs, the scheduler for periodic tasks), Valkey and PostgreSQL.
 # This file alone is the development default.
 #
 # Overrides, chosen with COMPOSE_FILE in .env (see README.md):
@@ -40,11 +41,11 @@ services:
     # POSTGRES_PASSWORD in .env to something of your own if you do.
     # ports: ["5432:5432"]
 
-  # Broker and cache: the Celery queue for bulk binds and the scheduled
-  # counter flush, plus the shared cache. Valkey by default; BROKER_IMAGE in
-  # .env picks another Redis-protocol server, such as redis:7-alpine. The
-  # application is the same either way: it talks the Redis protocol, so its
-  # URLs below keep the redis:// scheme while the host is this service.
+  # Broker and cache: the Celery queues for bulk binds and the periodic tasks,
+  # plus the shared cache. Valkey by default; BROKER_IMAGE in .env picks
+  # another Redis-protocol server, such as redis:7-alpine. The application is
+  # the same either way: it talks the Redis protocol, so its URLs below keep
+  # the redis:// scheme while the host is this service.
   #
   # Clients must authenticate with BROKER_PASSWORD (the server's default
   # user). Both images pass arguments that start with - to their server, so
@@ -110,11 +111,16 @@ services:
       db: {condition: service_healthy}
       broker: {condition: service_healthy}
 
+  # Bulk-bind jobs, from the default `celery` queue. Two at a time; each child
+  # process is replaced after 20 jobs or once it passes about 1 GB, so one huge
+  # upload cannot leave the worker holding that memory for good. The long grace
+  # period lets a job that is running finish before Docker kills it.
   worker:
     # No build section: the worker runs the same image web builds, so the
     # source is compiled into one image rather than two.
     image: arkservice-web:local
-    command: celery -A arkservice worker --beat --loglevel=info --concurrency=2
+    command: celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info
+    stop_grace_period: 120s
     environment: *env
     volumes: [media:/data/media]
     depends_on:
@@ -122,6 +128,21 @@ services:
       broker: {condition: service_healthy}
       # web runs the migrations, so the worker waits for it rather than racing
       # a half-built schema on a first install.
+      web: {condition: service_healthy}
+
+  # Celery beat and the `periodic` queue it feeds: the redirect-counter flush
+  # and the other housekeeping tasks. A process of its own so a long bulk bind
+  # can never hold the flush up, and so the worker can be scaled without
+  # running beat twice. Run exactly one.
+  scheduler:
+    image: arkservice-web:local
+    command: celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info
+    stop_grace_period: 30s
+    environment: *env
+    volumes: [media:/data/media]
+    depends_on:
+      db: {condition: service_healthy}
+      broker: {condition: service_healthy}
       web: {condition: service_healthy}
 
 volumes:
