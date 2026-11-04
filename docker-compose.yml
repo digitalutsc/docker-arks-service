@@ -111,9 +111,19 @@ services:
         src: ${ARKS_SRC:-../arks-service}
     restart: unless-stopped
     logging: *logging
+    # Threads rather than more processes: a /manifest fetch parks a worker on
+    # I/O, and 3 sync workers meant three slow targets could stall the whole
+    # service. Each worker is replaced after about 2000 requests (jittered so
+    # they do not all restart together), which caps slow memory growth.
+    # --keep-alive 5 sits above a proxy's pooled-connection ttl, so the proxy
+    # always closes an idle connection first. This is the only place the
+    # command is set: the image has no CMD of its own.
     command: >
       sh -c "python manage.py migrate --no-input &&
-             gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --access-logfile -"
+             exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"
+    # Above gunicorn's 30 s graceful timeout, so in-flight requests finish
+    # before Docker sends SIGKILL.
+    stop_grace_period: 35s
     environment: &env
       DATABASE_URL: postgres://${POSTGRES_USER:-ark}:${POSTGRES_PASSWORD:-ark}@db:5432/${POSTGRES_DB:-ark}
       # Database 0 is the Celery queue, database 1 the cache. The password goes

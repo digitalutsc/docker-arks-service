@@ -63,8 +63,5 @@ RUN useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin app \
 USER app
 
 EXPOSE 8000
-# Threads rather than more processes: a /manifest fetch parks a worker on I/O,
-# and 3 sync workers meant three slow targets could stall the whole service.
-CMD ["gunicorn", "arkservice.wsgi:application", "--bind", "0.0.0.0:8000", \
-     "--workers", "3", "--threads", "8", "--worker-class", "gthread", \
-     "--timeout", "60", "--access-logfile", "-"]
+# No CMD: docker-compose.yml sets the command for every service (gunicorn for
+# web, Celery for worker and scheduler), so there is one place to change it.
