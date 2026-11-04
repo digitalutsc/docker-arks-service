@@ -1,0 +1,12 @@
+# The main build context is this repository, and the Dockerfile copies nothing
+# from it (the application arrives through the named context `src`). This
+# keeps secrets and bulky files from being sent to the builder at all.
+.env
+.env.*
+!.env.example
+.git
+*.csv
+src/
+.ipynb_checkpoints
+*.sql
+*.sql.gz
