@@ -17,12 +17,16 @@ Production can also still run bare on a VM without Docker, as described in
 | Service | Image | Role |
 |---|---|---|
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
-| `worker` | the same image | Celery worker and beat, for bulk-bind jobs and counter flushes |
-| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis). Not started at all with the [external broker override](#production-an-external-valkey-or-redis-server) | Celery queue for bulk binds and the counter flush; cache for the login throttle, resolved targets and redirect counts. Password-protected |
+| `worker` | the same image | Celery worker for bulk-bind jobs (the `celery` queue) |
+| `scheduler` | the same image | Celery beat plus a one-process worker for the `periodic` queue: the redirect-counter flush and the other housekeeping tasks. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
+| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis). Not started at all with the [external broker override](#production-an-external-valkey-or-redis-server) | Celery queues for bulk binds and the periodic tasks; cache for the login throttle, resolved targets and redirect counts. Password-protected, and keeps its data |
 | `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database). Not started at all with the [external database override](#production-an-external-mysql-server) | the database |
 
-Only `web` publishes a port. Data lives in two named volumes, `pgdata` (or
-`mysqldata` under MySQL, or neither against an external server) and `media`. The Compose project is named `arkservice` explicitly, so renaming
+Only `web` publishes a port: on every interface by default, on 127.0.0.1 only
+[behind a reverse proxy](#behind-a-reverse-proxy-with-tls). Data lives in
+named volumes: `pgdata` (or `mysqldata` under MySQL, or neither against an
+external server), `media`, and `brokerdata` (none against an external
+broker). The Compose project is named `arkservice` explicitly, so renaming
 either checkout does not orphan them.
 
 ## Requirements
@@ -52,6 +56,7 @@ make install     # the same, but always rebuild the image first
 make down        # stop it, keeping the data
 make clean       # remove it entirely: containers, volumes, image
 make rebuild     # clean, then install
+make prune       # free disk: this stack's dangling images and stale build cache
 ```
 
 `make up` is the only one you need. It creates `.env` from `.env.example`,
@@ -61,7 +66,15 @@ the stack, waits until it actually answers, creates the administrator account,
 and prints the address and the login. Running it again is safe, and it is also
 the everyday way to start the stack: nothing already set is regenerated, an
 existing checkout is never pulled or reset, an existing image is not rebuilt,
-and an existing administrator is left alone.
+and an existing administrator is left alone: if the account already exists,
+its password, active flag and staff status are not touched, even if someone
+has since disabled or demoted it.
+
+On a machine whose `COMPOSE_FILE` names an external database or broker (that
+is, production), `make clean` and `make rebuild` ask you to type `yes` before
+taking the stack apart, and `make import-dump` refuses to write into the
+external database at all unless given `CONFIRM=yes`. `CONFIRM=yes` also
+answers the question for scripts. A development stack is never asked.
 
 ### Updating the application
 
@@ -91,6 +104,22 @@ make ps          # what is running
 make shell       # a shell inside the web container
 ```
 
+### Disk housekeeping
+
+Every `make build` and `make install` ends by deleting the images earlier
+builds left behind untagged, but only those carrying this stack's label
+(`org.utsc.arkservice=app`, set in the Dockerfile). Tagged images, such as a
+snapshot's `arkservice-web:<tag>`, and other projects' images are never
+touched. Images built before the label existed carry none: remove an old
+untagged one once by hand (`docker image ls --filter dangling=true`).
+
+`make prune` does the same image cleanup, then removes unused build cache
+older than a day. Build cache carries no image labels, so that step is not
+limited to this stack: it is Docker's ordinary `builder prune` with an age
+filter, and `docker buildx du` shows what it would free. Finally it lists any
+other `arkservice-*` image tags it found, for you to remove with
+`docker image rm` if they are no longer wanted; it deletes none of them.
+
 ## Configuration
 
 Everything is in `.env`, which `make up` creates and never overwrites.
@@ -104,7 +133,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
 | `ARKS_EXTRA_HOSTS` | empty | Hostnames to answer on **beyond** localhost and 127.0.0.1, which are always allowed |
-| `COMPOSE_FILE` | commented out | Which overrides to use: MySQL container, external MySQL, external broker. Commented out means a PostgreSQL container and a Valkey container. See [Database](#database) and [Broker and cache](#broker-and-cache-valkey-or-redis) |
+| `COMPOSE_FILE` | commented out | Which overrides to use: MySQL container, external MySQL, external broker, reverse proxy. Commented out means a PostgreSQL container and a Valkey container. See [Database](#database), [Broker and cache](#broker-and-cache-valkey-or-redis) and [Behind a reverse proxy](#behind-a-reverse-proxy-with-tls) |
 | `POSTGRES_DB` | `ark` | PostgreSQL container: the database it creates. Set it before the first install |
 | `POSTGRES_USER` | `ark` | PostgreSQL container: the account it creates. Set it before the first install |
 | `POSTGRES_PASSWORD` | `ark` | PostgreSQL container: that account's password. Only reachable inside the Compose network. Set it before the first install |
@@ -125,6 +154,34 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
 | `MINT_MAX_PER_REQUEST` | `10000` | Largest single mint. `0` removes the cap. Takes effect on the next `make up` |
 
+The variables below are commented out in `.env.example`; `docker-compose.yml`
+supplies the default shown and passes each one to `web`, `worker` and
+`scheduler` alike, so the processes always agree. A change takes effect on the
+next `make up`. Numbers and booleans need a value: a line such as
+`DB_READ_TIMEOUT=` with nothing after it stops the application at start-up,
+so comment a line out rather than blanking it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TRUST_FORWARDED_FOR` | `false`; `true` with `docker-compose.proxy.yml` | Take the client address from `X-Forwarded-For` (the entry the proxy appended) for the login throttle. Only safe when nothing but the proxy can reach the port, which is what the proxy override arranges |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Comma-separated `https://` origins allowed to post forms. Only needed when a form is posted from a different hostname than the one that served it |
+| `SECURE_HSTS_SECONDS` | `0` | HSTS lifetime. Leave 0 until TLS is known good on the hostname, then raise it |
+| `ARK_PUBLIC_BASE_URL` | empty | Base URL shown for ARKs in the staff interface. Empty derives it from the request; set it only when the staff and resolver hostnames differ |
+| `DB_CONN_MAX_AGE` | `60` | Seconds a database connection is reused |
+| `DB_CONNECT_TIMEOUT`, `DB_READ_TIMEOUT`, `DB_WRITE_TIMEOUT` | `5`, `60`, `60` | MySQL only: seconds to connect, and to wait on a read or write, before giving up |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` | Seconds to connect to, and wait on, the cache before giving up, so a broker outage slows requests rather than hanging them |
+| `BULK_BIND_MAX_ROWS` | `100000` | Largest bulk-bind upload, in rows |
+| `BULK_BIND_MAX_BYTES` | `52428800` | Largest bulk-bind upload, in bytes (50 MB). A proxy in front needs a request-body limit at least this large |
+| `BULK_BIND_RETENTION_DAYS` | `0` | Days to keep finished bulk-bind jobs and their files. `0` keeps them forever |
+| `CELERY_TASK_TIME_LIMIT` | `3600` | Seconds a background job may run before Celery stops it |
+| `MANIFEST_TOTAL_TIMEOUT` | `10` | Seconds a `/manifest` fetch may take in all |
+| `MANIFEST_MAX_CONCURRENT` | `4` | `/manifest` fetches at once per gunicorn process; more get 503 with `Retry-After` |
+| `COLLECTION_STATS_SECONDS` | `300` | How often the stored collection counts shown on staff pages are refreshed |
+| `SORT_SUBQUERY_MAX_ROWS` | `50000` | The most ARKs a staff list may hold and still offer the Redirects and Elements sorts |
+| `EXPORT_SYNC_MAX_ROWS` | `100000` | The largest export the staff interface serves itself; above it, it shows the equivalent `export_arks` command |
+| `WEB_MEM_LIMIT`, `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT`, `BROKER_MEM_LIMIT` | `1g`, `2g`, `256m`, `256m` | Memory ceiling per container. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
+| `BROKER_MAXMEMORY` | `200mb` | Valkey/Redis `--maxmemory` for the broker container. Keep it below `BROKER_MEM_LIMIT`: with `noeviction` a full broker refuses writes rather than being killed |
+
 `.env` is read by Compose and by the Makefile, which parse it slightly
 differently. Two rules keep them agreeing: **comments on their own lines**, and
 **no quotes around values**. A trailing comment or a pair of quotes ends up
@@ -143,9 +200,10 @@ A few variables are less free than they look:
   Changing one later leaves the application unable to log in; `make clean`
   first, then change it. Against an external server the values are that
   server's, and change whenever its account does.
-- **The broker container applies `BROKER_PASSWORD` on every start.** It keeps
-  no data, so changing the password is safe; `make down && make up` puts the
-  new one into effect for the broker and the application together.
+- **The broker container applies `BROKER_PASSWORD` on every start.** The
+  password is not stored with its data, so changing it is safe;
+  `make down && make up` puts the new one into effect for the broker and the
+  application together.
 - **User names and passwords are substituted into URLs.** Use letters and
   digits. A password you cannot choose has to be percent-encoded in `.env`:
   `@` as `%40`, `/` as `%2F`, `#` as `%23`, `%` as `%25`, `:` as `%3A`.
@@ -168,14 +226,26 @@ build:
 
 The Dockerfile then copies from `src` one explicit line per top-level package,
 rather than `COPY . .`. That is what keeps a developer's `.venv`, `.git`,
-`db.sqlite3` and `staticfiles` out of the image, and it means the application
-repository needs no Docker files of its own — not even a `.dockerignore`.
+`db.sqlite3`, `media` and `staticfiles` out of the image, and it means the
+application repository needs no Docker files of its own — not even a
+`.dockerignore`: BuildKit sends the builder only the paths those lines name.
+This repository's own `.dockerignore` keeps `.env`, exports and CSVs from
+being sent as the main context, which the Dockerfile does not copy from.
+
+The build has two stages. The first has the compiler and MySQL headers and
+builds the virtual environment with `uv sync --frozen`, which fails if
+`uv.lock` is out of date rather than resolving something else. The second,
+the image that runs, gets that environment, the MySQL client library
+(`libmariadb3`), `curl` for the healthcheck and the application, and runs as
+an unprivileged user (uid 10001). The image has no `CMD`: `docker-compose.yml`
+sets each service's command.
 
 The cost: **adding a new top-level Django app to the application means adding a
 `COPY --from=src` line to the Dockerfile here.** A missing one shows up
 immediately as a `ModuleNotFoundError` on startup.
 
-`web` builds the image and `worker` reuses it, so the source is compiled once.
+`web` builds the image and `worker` and `scheduler` reuse it, so the source
+is compiled once.
 
 ## Database
 
@@ -192,7 +262,7 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.mysql.yml
 and run `make down && make up`. Compose reads `COMPOSE_FILE` from `.env` on its
 own, so every `make` target picks up the override without further flags. The
 override (`docker-compose.mysql.yml`) replaces the `db` service and points
-`web` and `worker` at it. Migrations run on the first start, as they do on
+`web`, `worker` and `scheduler` at it. Migrations run on the first start, as they do on
 PostgreSQL. It needs Docker Compose 2.24.4 or later, which `make check`
 verifies.
 
@@ -227,7 +297,7 @@ Then run `make up`. The broker stays a container unless you also add the
   deployment. Back the database up before a `make install` that brings new
   migrations.
 - **`make up` waits for the server.** The `db` service is never created, and
-  `web` and `worker` no longer wait for it. `web` only reports healthy once its
+  `web`, `worker` and `scheduler` no longer wait for it. `web` only reports healthy once its
   `/healthz` check can reach the external server.
 - **`MYSQL_HOST` and `MYSQL_PASSWORD` have no default.** Compose refuses to
   start without them and says which one is missing.
@@ -238,22 +308,24 @@ Then run `make up`. The broker stays a container unless you also add the
   and allow the account from that network.
 - **`make clean` never touches the external database.** It removes the
   stack's own containers, the `media` volume and the image.
-- **`make import-dump` writes into the external database.** Rehearse with
-  `ARGS="--dry-run"` first, and rehearse the real thing against a MySQL
-  container, not against production.
+- **`make import-dump` writes into the external database**, so it refuses
+  unless given `CONFIRM=yes`. Rehearse with `ARGS="--dry-run" CONFIRM=yes`
+  first, and rehearse the real thing against a MySQL container, not against
+  production.
 
 This file is an alternative to `docker-compose.mysql.yml`, not an addition:
 use one or the other. It needs Docker Compose 2.24.4 or later, which
-`make check` verifies. Nothing in it puts the stack behind a reverse proxy
-with TLS yet; that is planned separately in `DOCKER-DEPLOY.md` at the
-workspace root.
+`make check` verifies. To put the stack behind Apache with TLS, add
+`docker-compose.proxy.yml` as well; see
+[Behind a reverse proxy](#behind-a-reverse-proxy-with-tls).
 
 ## Broker and cache: Valkey or Redis
 
 The `broker` service is the Celery queue and the shared cache. A bulk-bind
 upload is saved as a job in the database and queued here; the worker takes it
-from the queue and runs it. The scheduled flush of redirect counts goes the
-same way. As the cache it holds the login throttle, the resolved-target cache
+from the queue and runs it. The scheduled flush of redirect counts and the
+other periodic tasks go the same way, on a queue of their own that the
+scheduler takes them from. As the cache it holds the login throttle, the resolved-target cache
 and redirect counts not yet written to the database.
 
 It runs [Valkey](https://valkey.io), the open-source fork of Redis, by
@@ -298,11 +370,24 @@ The service used to be called `redis`. `make up` and `make down` remove
 containers of services the files no longer define, so the old
 `arkservice-redis-1` container goes away on the first `make up` after updating.
 
-Neither service keeps a volume, so switching loses only the redirect counts
-not yet written to the database. On a live system flush them first:
+**The broker keeps its data** in the `brokerdata` volume. It appends every
+write to a log on that volume, flushed once a second (`--appendonly yes
+--appendfsync everysec`), so a restart or `make down && make up` loses neither
+queued bulk-bind jobs nor redirect counts not yet written to the database.
+It runs with `--maxmemory-policy noeviction`: the queue and the counters share
+the server with the cache, and under memory pressure a write that fails
+loudly is better than a queued job or a count silently evicted. Never give it
+an `allkeys-*` policy. `make clean` removes the volume with the rest.
+
+When switching between Valkey and Redis, do not count on one reading the
+other's files. On a live system flush the counters and let running bulk binds
+finish, then start the new server on an empty volume:
 
 ```
 make manage ARGS="flush_counters"
+make down
+docker volume rm arkservice_brokerdata
+make up
 ```
 
 ### Production: an external Valkey or Redis server
@@ -322,8 +407,8 @@ BROKER_PASSWORD=...
 
 Then run `make up`.
 
-- **The `broker` container is never created**, and `web` and `worker` no
-  longer wait for it. `web` only reports healthy once its `/healthz` check can
+- **The `broker` container is never created**, and `web`, `worker` and
+  `scheduler` no longer wait for it. `web` only reports healthy once its `/healthz` check can
   reach the cache on that server.
 - **Credentials.** Replace the generated `BROKER_PASSWORD` with the server's.
   Set `BROKER_USERNAME` when the server gives you a named account (an ACL
@@ -345,6 +430,95 @@ Then run `make up`.
 
 The external database and broker files combine in either order, and each can
 be used without the other. Like them, it needs Docker Compose 2.24.4 or later.
+The persistence settings above apply to the broker container only; an
+external server needs its own (append-only on, `noeviction`), which is that
+server's administrator's to set.
+
+## Behind a reverse proxy with TLS
+
+On a VM where Apache terminates TLS in front of the stack, add
+`docker-compose.proxy.yml` last in `COMPOSE_FILE`. **Production is all four
+files:**
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.proxy.yml
+ARKS_EXTRA_HOSTS=ark.digital.utsc.utoronto.ca
+```
+
+A staging VM rehearsing against a MySQL container uses
+`docker-compose.yml:docker-compose.mysql.yml:docker-compose.proxy.yml`.
+
+What the override changes:
+
+- **`web` publishes its port on 127.0.0.1 only** (`127.0.0.1:${ARKS_PORT}`).
+  Apache on the same host reaches it there and nothing else can. Docker's
+  published ports bypass the host firewall (`ufw` included), so binding to
+  loopback is what keeps gunicorn off the network.
+- **The session and CSRF cookies are marked Secure** on `web`, `worker` and
+  `scheduler`, so browsers send them over HTTPS only, as in a bare production
+  deployment.
+- **`TRUST_FORWARDED_FOR` defaults to `true`**, because Apache appends the
+  real client address to `X-Forwarded-For` and nothing but Apache can reach
+  the port. Without the override it defaults to `false`: on a published port
+  that header is whatever the client sends.
+
+`ARKS_EXTRA_HOSTS` must name the public hostname, or Django answers 400; it
+adds to `localhost`, which the healthcheck needs, and never replaces it.
+
+The Apache vhost has the same shape as the bare deployment's
+`deploy/apache-arkservice.conf` in the application repository, but proxies
+everything to the container:
+
+- `ServerName` the public hostname, TLS, `ProxyPreserveHost On`,
+  `RequestHeader set X-Forwarded-Proto "https"`,
+  `ProxyPass / http://127.0.0.1:8000/ nocanon`, `AllowEncodedSlashes NoDecode`.
+- **No** `Alias /static/`: WhiteNoise serves static files from inside the
+  image.
+- A pooled-connection `ttl` below gunicorn's 5 s keep-alive, and a request
+  body limit on the bulk-bind upload at least `BULK_BIND_MAX_BYTES`.
+- Check `nocanon` with `curl -sI 'https://<host>/ark:/61220/<id>?' | head -1`:
+  it must be `200`, not `302`.
+
+A legacy export only ever reaches such a VM over SSH (`scp`), never through a
+share or a ticket attachment. Import it with `make import-dump`, which needs
+`CONFIRM=yes` against an external database, then `shred -u` it.
+
+The override needs Docker Compose 2.24.4 or later, which `make check`
+verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md` at
+the workspace root.
+
+## Processes, restarts, logs and memory
+
+- **`web`** runs the migrations, then gunicorn: 3 processes of 8 threads.
+  Each process is replaced after about 2000 requests (`--max-requests 2000
+  --max-requests-jitter 200`), which caps slow memory growth, and keeps idle
+  connections open for 5 s. On stop, in-flight requests get 30 s to finish
+  (`--graceful-timeout 30`, `stop_grace_period: 35s`).
+- **`worker`** runs bulk-bind jobs from the `celery` queue, two at a time.
+  Each child process is replaced after 20 jobs or once it passes about 1 GB
+  (`--max-tasks-per-child 20 --max-memory-per-child 1000000`), so one huge
+  upload does not leave it holding that memory. Docker waits 120 s on stop, so
+  a running job can finish. It can be scaled
+  (`docker compose up -d --scale worker=2`); beat is not in it.
+- **`scheduler`** runs Celery beat and a single-process worker for the
+  `periodic` queue: the redirect-counter flush and the other housekeeping
+  tasks. In its own process so a long bulk bind never holds the flush up.
+  **Run exactly one**: two would schedule every task twice.
+- **Every service restarts on its own** (`restart: unless-stopped`) after a
+  crash or a reboot of the host, unless it was stopped on purpose.
+  `make down` removes the containers, so development is unaffected.
+- **Logs are capped**: Docker's `json-file` driver, five files of 10 MB per
+  container. `make logs` reads them as before.
+- **Memory is capped per container**: `web` 1 GB, `worker` 2 GB,
+  `scheduler` and `broker` 256 MB, tunable with `WEB_MEM_LIMIT`,
+  `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT` and `BROKER_MEM_LIMIT` (Docker
+  sizes: `512m`, `1g`, ...). The database containers have no limit. A
+  container that reaches its limit is killed and restarted; `docker inspect
+  --format '{{.State.OOMKilled}}' arkservice-worker-1` says whether that is
+  what happened.
+- **Healthchecks run every 15 s.** `web` has 30 s of grace and then 10
+  attempts, about three minutes, for a first start with every migration to
+  run.
 
 ## Rehearsing the migration
 
@@ -353,9 +527,11 @@ phpMyAdmin or `mysqldump` `.sql` file, gzipped or not — into this stack, so yo
 can see what the migration produces before it happens anywhere that matters. Add
 `ARGS="--dry-run"` to have it report what it would do and keep none of it.
 
-The file is copied into the running container, read there, and deleted again;
-nothing is mounted and nothing enters the image, so the export can sit anywhere
-on your machine. Every run leaves an `import-report.csv` here listing the rows
+The file is copied into the running container, read there, and deleted again,
+whether the import succeeds or fails (the importer's exit status is passed
+on); nothing is mounted and nothing enters the image, so the export can sit
+anywhere on your machine. Against an external database it refuses without
+`CONFIRM=yes`, because it would write into that server. Every run leaves an `import-report.csv` here listing the rows
 that could not be carried over exactly as legacy held them.
 
 Full walk-through in [MIGRATION.md](MIGRATION.md); what the migration actually
@@ -406,6 +582,18 @@ Dockerfile.
 
 **`make import-dump` fails while copying the file in.** The stack is not
 running; `docker compose cp` needs a live container. `make up` first.
+
+**A container keeps restarting, with exit code 137.** It reached its memory
+limit and was killed. `docker inspect --format '{{.State.OOMKilled}}'
+<container>` confirms it; raise the matching `*_MEM_LIMIT` in `.env` and
+`make up`.
+
+**`make clean` or `make rebuild` asks for `yes`.** `COMPOSE_FILE` names an
+external database or broker, so the stack is taken to be production. Type
+`yes`, or pass `CONFIRM=yes`.
+
+**Disk filling up with old images.** `make prune`; see
+[Disk housekeeping](#disk-housekeeping).
 
 **Large `arkservice-web:latest` and `arkservice-worker:latest` images left over.**
 Those are from the older Compose file that lived inside the application
