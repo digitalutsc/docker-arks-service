@@ -67,6 +67,13 @@ services:
   # one command line serves either. A blank password turns authentication
   # off, which only makes sense on a machine nobody else can reach.
   #
+  # It keeps its data in the brokerdata volume, appending every write to a log
+  # flushed once a second, so a restart loses neither queued bulk-bind jobs nor
+  # redirect counts not yet written to the database. noeviction because the
+  # queue and the counters share this server with the cache: under memory
+  # pressure a write must fail loudly rather than silently drop a queued job or
+  # a count. Never give it an allkeys-* policy.
+  #
   # The healthcheck calls redis-cli, which the Valkey image also provides (as a
   # link to valkey-cli), so it holds for both. It looks for PONG rather than
   # trusting the exit status: redis-cli exits 0 even when authentication fails,
@@ -75,9 +82,22 @@ services:
     image: ${BROKER_IMAGE:-valkey/valkey:8-alpine}
     restart: unless-stopped
     logging: *logging
-    command: ["--requirepass", "${BROKER_PASSWORD:-}"]
+    command:
+      - --requirepass
+      - "${BROKER_PASSWORD:-}"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+      # Below BROKER_MEM_LIMIT, so a full broker refuses writes (hits are then
+      # written straight to the database) instead of being killed by Docker.
+      - --maxmemory
+      - ${BROKER_MAXMEMORY:-200mb}
     environment:
       BROKER_PASSWORD: ${BROKER_PASSWORD:-}
+    volumes: [brokerdata:/data]
     healthcheck:
       test: ["CMD-SHELL", "if [ -n \"$$BROKER_PASSWORD\" ]; then export REDISCLI_AUTH=\"$$BROKER_PASSWORD\"; fi; redis-cli ping | grep -q PONG"]
       interval: 5s
@@ -203,3 +223,4 @@ services:
 volumes:
   pgdata:
   media:
+  brokerdata:
