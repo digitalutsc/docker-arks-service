@@ -1,4 +1,4 @@
-"""Create the stack's administrator account, or leave an existing one alone.
+"""Create the stack's administrator account if it is absent; never touch an existing one.
 
 Piped into `manage.py shell` by `make admin`, so it runs inside the web
 container with Django already configured. The credentials arrive as
@@ -30,17 +30,11 @@ if user is None:
     print(f"Created administrator {username!r} with password: {password}")
     print("A superuser is automatically an Admin in the staff interface.")
 else:
-    # The password is deliberately left as it is. Re-running `make up`
-    # should not reset an account whose password someone has since changed.
-    restored = [
-        field
-        for field in ("is_active", "is_staff", "is_superuser")
-        if not getattr(user, field)
-    ]
-    if restored:
-        for field in restored:
-            setattr(user, field, True)
-        user.save(update_fields=restored)
-        print(f"Administrator {username!r} already existed; restored {', '.join(restored)}.")
-    else:
-        print(f"Administrator {username!r} already exists; its own password still stands.")
+    # Left exactly as it is: no password reset, and no re-enabling or
+    # re-promoting either. An account someone has since disabled, demoted or
+    # given a new password stays that way however often `make up` runs. To
+    # restore it, use the staff interface or `make manage ARGS="changepassword ..."`.
+    print(
+        f"Administrator {username!r} already exists; left unchanged "
+        "(password, active and staff status are its own)."
+    )
