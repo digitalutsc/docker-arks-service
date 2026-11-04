@@ -5,6 +5,10 @@
 #   make down      stop it, keeping the data
 #   make clean     remove it entirely, data and image included
 #   make rebuild   clean, then install
+#   make prune     remove this stack's dangling images and stale build cache
+#
+# clean and rebuild ask first when COMPOSE_FILE names an external server, and
+# import-dump into an external database refuses; CONFIRM=yes for either.
 #
 # The application source is not in this repository; ARKS_SRC in .env says
 # where it is, and `make up` clones it there if it is missing. See README.md.
@@ -12,10 +16,13 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help check env src build install up down clean rebuild confirm-external admin info logs ps shell manage import-dump
+.PHONY: help check env src build install up down clean rebuild prune confirm-external admin info logs ps shell manage import-dump
 
 COMPOSE ?= docker compose
 IMAGE := arkservice-web:local
+# The Dockerfile labels the image with this, so pruning can be limited to
+# images this stack built and leave every other project's alone.
+LABEL := org.utsc.arkservice=app
 
 # Where `make import-dump` leaves the review CSV it brings back out.
 REPORT ?= import-report.csv
@@ -70,6 +77,7 @@ up: env check src ## Bring the whole stack up, from nothing if need be
 	@$(MAKE) --no-print-directory info
 
 install: build up ## The same as up, but always rebuild the image first
+	@docker image prune -f --filter label=$(LABEL) >/dev/null
 
 # --remove-orphans here and in up: a container for a service the Compose
 # files no longer define (such as redis, before it was renamed broker) would
@@ -101,8 +109,31 @@ confirm-external:
 	  [ "$$answer" = yes ] || { echo "Nothing done."; exit 1; } ;; \
 	esac
 
+# Each build leaves the previous image behind untagged once nothing uses it,
+# several hundred MB at a time. The prune removes only dangling images with
+# this stack's label: tagged ones (a snapshot's arkservice-web:<tag>) and
+# other projects' images stay. install prunes again after up, because the
+# image the old containers were still running only dangles once up has
+# replaced them.
 build: env check src ## Build the application image
 	@$(COMPOSE) build --pull
+	@docker image prune -f --filter label=$(LABEL) >/dev/null
+
+# Build cache records carry no image labels, so they cannot be picked out by
+# this stack's label; the cache prune takes unused build cache older than a
+# day from every project (`docker buildx du` shows it first). Nothing a
+# running container uses and no tagged image is removed. Old tags are only
+# listed, for you to remove with docker image rm.
+prune: ## Remove this stack's dangling images and stale build cache; list old tags
+	@docker image prune -f --filter label=$(LABEL)
+	@docker builder prune -f --filter until=24h
+	@old=$$(docker image ls --format '{{.Repository}}:{{.Tag}}  {{.Size}}' \
+	    | grep '^arkservice-' | grep -v '^$(IMAGE) '); \
+	if [ -n "$$old" ]; then \
+	  echo; \
+	  echo "Other arkservice-* images, left alone (docker image rm to remove):"; \
+	  echo "$$old" | sed 's/^/  /'; \
+	fi
 
 check: ## Check that Docker and Compose v2 are there
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed."; exit 1; }

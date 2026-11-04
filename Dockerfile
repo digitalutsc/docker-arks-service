@@ -44,6 +44,8 @@ RUN uv sync --frozen --no-install-project --no-dev --extra postgres --extra mysq
 # --- runtime ------------------------------------------------------------------
 FROM python:3.13-slim
 
+LABEL org.utsc.arkservice=app
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
