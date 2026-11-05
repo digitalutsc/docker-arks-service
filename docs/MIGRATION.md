@@ -10,7 +10,7 @@ production the stack may point at an external MySQL server
 (`docker-compose.external-db.yml`); with that override on, `make import-dump`
 writes there. Rehearse with the override off. The rules the importer applies, the review report and the real cutover runbook
 all live in
-[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/MIGRATION.md) — read
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/docs/MIGRATION.md) — read
 that one for what the migration *means*. This page is only about driving it
 here.
 
@@ -140,4 +140,4 @@ seconds; writing several million rows to PostgreSQL is the rest. It is one
 transaction, so an interrupted run leaves nothing behind.
 
 Everything else is in
-[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/MIGRATION.md).
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/docs/MIGRATION.md).

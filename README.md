@@ -10,7 +10,12 @@ development, demos and prototyping the stack brings its own database. For
 production it can instead point at an existing MySQL server and start no
 database container; see [Production: an external MySQL server](#production-an-external-mysql-server).
 Production can also still run bare on a VM without Docker, as described in
-`DEPLOY.md` in the application repository.
+`docs/DEPLOY.md` in the application repository.
+
+Documents in this repository: this README (operator reference),
+[`docs/MIGRATION.md`](docs/MIGRATION.md) (rehearsing the legacy import here) and
+[`docs/GUIDES.md`](docs/GUIDES.md) (a study guide to every file, Make target,
+Compose override and the configuration flow).
 
 ## What comes up
 
@@ -19,7 +24,7 @@ Production can also still run bare on a VM without Docker, as described in
 | `web` | built here | gunicorn, serving the resolver and the staff interface on port 8000 |
 | `worker` | the same image | Celery worker for bulk-bind jobs (the `celery` queue) |
 | `scheduler` | the same image | Celery beat plus a one-process worker for the `periodic` queue: the redirect-counter flush and the other housekeeping tasks. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
-| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis). Not started at all with the [external broker override](#production-an-external-valkey-or-redis-server) | Celery queues for bulk binds and the periodic tasks; cache for the login throttle, resolved targets and redirect counts. Password-protected, and keeps its data |
+| `broker` | `valkey/valkey:8-alpine`, or `redis:7-alpine` with [`BROKER_IMAGE`](#broker-and-cache-valkey-or-redis). Not started at all with the [external broker override](#production-an-external-valkey-or-redis-server) | Celery queues for bulk binds and the periodic tasks; cache for the login throttle, element-name lists and collection statistics, bulk-bind progress, and redirect counts not yet written to the database. Password-protected, and keeps its data |
 | `db` | `postgres:16-alpine`, or `mysql:8.0` with the [MySQL override](#database). Not started at all with the [external database override](#production-an-external-mysql-server) | the database |
 
 Only `web` publishes a port: on every interface by default, on 127.0.0.1 only
@@ -153,6 +158,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
 | `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
 | `MINT_MAX_PER_REQUEST` | `10000` | Largest single mint. `0` removes the cap. Takes effect on the next `make up` |
+| `FALLBACK_DIR` | empty | A directory on this host holding operator-written `index.html`, `403.html`, `404.html`, `500.html` and their assets, mounted read-only into `web`. Empty means the built-in landing page and plain error pages. See [Fallback pages](#fallback-pages) |
 
 The variables below are commented out in `.env.example`; `docker-compose.yml`
 supplies the default shown and passes each one to `web`, `worker` and
@@ -325,8 +331,10 @@ The `broker` service is the Celery queue and the shared cache. A bulk-bind
 upload is saved as a job in the database and queued here; the worker takes it
 from the queue and runs it. The scheduled flush of redirect counts and the
 other periodic tasks go the same way, on a queue of their own that the
-scheduler takes them from. As the cache it holds the login throttle, the resolved-target cache
-and redirect counts not yet written to the database.
+scheduler takes them from. As the cache it holds the login throttle, the element-name lists and
+collection statistics, bulk-bind progress, and redirect counts not yet written
+to the database. The resolver does not read it: a redirect is two database
+reads, and the cache's only part in resolution is buffering the hit counter.
 
 It runs [Valkey](https://valkey.io), the open-source fork of Redis, by
 default. To run Redis instead, set this in `.env`:
@@ -487,6 +495,32 @@ The override needs Docker Compose 2.24.4 or later, which `make check`
 verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md` at
 the workspace root.
 
+## Fallback pages
+
+The public sees three pages that are not ARKs: the landing page at `/`, the
+404 for an unknown or unbound identifier, and the error pages. By default they
+are the application's built-in landing page and Django's plain error pages. To
+replace them, put your own files in a directory on the host and name it:
+
+```
+FALLBACK_DIR=/srv/ark/fallback
+```
+
+then `make up`. The directory is mounted read-only into `web` at
+`/data/fallback`; the application reads `index.html`, `403.html`, `404.html`
+and `500.html` from it and serves anything else there (stylesheets, images,
+fonts) under `/fallback/<name>`. Edits show within a minute, no restart. A
+starting kit with all four pages and a stylesheet is
+`docs/fallback-example/` in the application repository; its README has the
+rules (pages are served as written with the real status code, `index.html`
+may use three placeholders, inline `<style>` is allowed, remote assets are
+not). A superuser sees which pages are in place, with previews, at the bottom
+of the staff interface's Users page.
+
+The directory is deliberately outside this repository: it is server content,
+owned by whoever has shell access. With `FALLBACK_DIR` blank the stack's own
+empty `fallback/` directory is mounted and the application ignores it.
+
 ## Processes, restarts, logs and memory
 
 - **`web`** runs the migrations, then gunicorn: 3 processes of 8 threads.
@@ -534,9 +568,9 @@ anywhere on your machine. Against an external database it refuses without
 `CONFIRM=yes`, because it would write into that server. Every run leaves an `import-report.csv` here listing the rows
 that could not be carried over exactly as legacy held them.
 
-Full walk-through in [MIGRATION.md](MIGRATION.md); what the migration actually
+Full walk-through in [docs/MIGRATION.md](docs/MIGRATION.md); what the migration actually
 does, and the real cutover runbook, are in
-[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/MIGRATION.md).
+[`MIGRATION.md` in the application repository](https://github.com/digitalutsc/arks-service/blob/main/docs/MIGRATION.md).
 
 A legacy export holds staff passwords in a form that can be decrypted. Keep it
 out of both checkouts and delete it when you are done.
