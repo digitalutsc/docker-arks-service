@@ -13,3 +13,6 @@
 import-report.csv
 cutover-diff.csv
 .ipynb_checkpoints/*
+# Real fallback pages live outside the repository; only the mount point is kept.
+fallback/*
+!fallback/.keep

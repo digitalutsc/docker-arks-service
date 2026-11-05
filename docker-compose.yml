@@ -179,7 +179,13 @@ services:
       COLLECTION_STATS_SECONDS: "${COLLECTION_STATS_SECONDS:-300}"
       SORT_SUBQUERY_MAX_ROWS: "${SORT_SUBQUERY_MAX_ROWS:-50000}"
       EXPORT_SYNC_MAX_ROWS: "${EXPORT_SYNC_MAX_ROWS:-100000}"
-    volumes: [media:/data/media]
+      # Set inside the container only when FALLBACK_DIR names a host directory;
+      # the mount below always exists (the stack's own empty fallback/ when the
+      # variable is blank), the variable decides whether the application looks.
+      FALLBACK_PAGES_DIR: "${FALLBACK_DIR:+/data/fallback}"
+    volumes:
+      - media:/data/media
+      - "${FALLBACK_DIR:-./fallback}:/data/fallback:ro"
     ports: ["${ARKS_PORT:-8000}:8000"]
     # /healthz proves the database and the counter cache are reachable, not
     # merely that gunicorn bound the port. `up --wait` blocks on this, so the
