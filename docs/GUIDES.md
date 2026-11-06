@@ -122,7 +122,7 @@ graph TB
       BROKER["broker<br/>valkey/valkey:8-alpine<br/>(redis:7-alpine via BROKER_IMAGE)<br/>requirepass, AOF, noeviction"]
     end
     PG[("pgdata<br/>/var/lib/postgresql/data")]
-    MEDIA[("media<br/>/data/media<br/>bulk-bind uploads + results")]
+    MEDIA[("media<br/>/data/media<br/>bulk-bind results<br/>+ uploads until the job ends")]
     BD[("brokerdata<br/>/data<br/>appendonly.aof")]
   end
   PORT --> WEB
@@ -817,7 +817,7 @@ No `io-threads`, `maxclients`, `timeout` or `tcp-keepalive` is set: the server r
 |---|---|---|---|---|
 | `arkservice_pgdata` | `db:/var/lib/postgresql/data` | the PostgreSQL database | base file | `make clean`/`rebuild` when the base file is in use (always, unless parked by external-db… see note) |
 | `arkservice_mysqldata` | `db:/var/lib/mysql` | the MySQL container's database | `docker-compose.mysql.yml` | `make clean`/`rebuild` **only while the MySQL override is on** |
-| `arkservice_media` | `web`, `worker`, `scheduler` `:/data/media` | bulk-bind uploads (`bulk-bind/%Y/%m/`) and results files (`…/results/`); also where `import-dump` works (`/data`) | base file | `make clean`/`rebuild` |
+| `arkservice_media` | `web`, `worker`, `scheduler` `:/data/media` | bulk-bind uploads (`bulk-bind/%Y/%m/`, deleted when their job ends) and results files (`…/results/`, kept until `BULK_BIND_RETENTION_DAYS` prunes the job); also where `import-dump` works (`/data`) | base file | `make clean`/`rebuild` |
 | `arkservice_brokerdata` | `broker:/data` | `appendonly.aof`: the Celery queue, cache, `arks:hits` | base file | `make clean`/`rebuild` (not with the external broker: no container) |
 
 What survives what:

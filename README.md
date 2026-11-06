@@ -178,7 +178,7 @@ so comment a line out rather than blanking it.
 | `CACHE_SOCKET_TIMEOUT` | `0.5` | Seconds to connect to, and wait on, the cache before giving up, so a broker outage slows requests rather than hanging them |
 | `BULK_BIND_MAX_ROWS` | `100000` | Largest bulk-bind upload, in rows |
 | `BULK_BIND_MAX_BYTES` | `52428800` | Largest bulk-bind upload, in bytes (50 MB). A proxy in front needs a request-body limit at least this large |
-| `BULK_BIND_RETENTION_DAYS` | `0` | Days to keep finished bulk-bind jobs and their files. `0` keeps them forever |
+| `BULK_BIND_RETENTION_DAYS` | `0` | Days to keep finished bulk-bind jobs and their results files (uploads are deleted as soon as a job has run). `0` keeps them forever |
 | `CELERY_TASK_TIME_LIMIT` | `3600` | Seconds a background job may run before Celery stops it |
 | `MANIFEST_TOTAL_TIMEOUT` | `10` | Seconds a `/manifest` fetch may take in all |
 | `MANIFEST_MAX_CONCURRENT` | `4` | `/manifest` fetches at once per gunicorn process; more get 503 with `Retry-After` |
