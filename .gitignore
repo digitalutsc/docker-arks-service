@@ -1,5 +1,10 @@
-# Holds this machine's generated secret key and administrator password.
+# Holds this machine's generated secret key and administrator password, as do
+# the per-environment copies (`.env.prod`, `env-sim-prod`, ...). Only the
+# template is tracked.
 .env
+.env.*
+env-*
+!.env.example
 
 .DS_Store
 
@@ -12,7 +17,7 @@
 *.sql.gz
 import-report.csv
 cutover-diff.csv
-.ipynb_checkpoints/*
+**/.ipynb_checkpoints/
 # Real fallback pages live outside the repository; only the mount point is kept.
 fallback/*
 !fallback/.keep

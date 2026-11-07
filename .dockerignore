@@ -3,6 +3,7 @@
 # keeps secrets and bulky files from being sent to the builder at all.
 .env
 .env.*
+env-*
 !.env.example
 .git
 *.csv

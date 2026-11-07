@@ -4,7 +4,7 @@ A complete walk through the Docker stack for the UTSC ARK identifier service: ev
 
 Written 2026-11-05 from the repository as it stands (`ea39a35 Document the production stack`). Everything quoted below (flags, messages, defaults) is taken from the files; where the README says something different, the discrepancy is called out.
 
-Companion documents: `README.md` (operator reference), `docs/MIGRATION.md` (rehearsing the legacy import here), and in the application repository `DEPLOY.md`, `MIGRATION.md`, `USAGES.md`. The application itself is described in `../arks-service/GUIDES.md`.
+Companion documents: `README.md` (operator reference), `docs/MIGRATION.md` (rehearsing the legacy import here), and in the application repository `DEPLOY.md`, `MIGRATION.md`, `USAGES.md`. The application itself is described in `../arks-service/docs/GUIDES.md`.
 
 ---
 
@@ -59,7 +59,7 @@ graph LR
   subgraph workspace["arks-redesign/ (workspace root, not a git repo)"]
     APP["arks-service/<br/>the Django application<br/>(own repo)"]
     STACK["docker-arks-service/<br/>THIS REPO: Dockerfile, Compose, Makefile<br/>(own repo)"]
-    IMG["docker-image-arks-service/<br/>shareable pre-populated bundle<br/>(own repo; NOT present locally)"]
+    IMG["docker-image-arks-service/<br/>shareable pre-populated bundle<br/>(historical; gone from the workspace)"]
     EP["ark-endpoints/<br/>persistent MySQL + Valkey stand-ins<br/>(no repo)"]
     LEG["legacy/<br/>PHP service being replaced<br/>(reference only)"]
   end
@@ -71,7 +71,7 @@ graph LR
 
 - **`arks-service`** — the code. Renamed on GitHub from `arks-service-new` on 2026-10-30; the stack's default clone URL is `https://github.com/digitalutsc/arks-service.git`.
 - **`arks-cli`** — the optional staff command line (`createcollection`, `mint`, `bind`, `unbind`, `bulk_bind`, `ark_stats`), a separate plugin since 2026-11-07. The image includes it only when `ARKS_PLUGIN_SRC` points at a checkout; otherwise the `plugin` build context is `plugins-none/` and nothing is installed. It is enabled at run time with `ARKS_PLUGINS=arks_cli`, which the shared `environment` anchor passes to `web`, `worker` and `scheduler`.
-- **`docker-image-arks-service`** — per `CLAUDE.md`, a sibling repository that builds a shareable bundle: this stack's app image plus a PostgreSQL image already holding the imported legacy data, on port 8001 with project name `arkservice-image`, driven by `make snapshot` / `make bundle` / `make load` / `make reset`. Its `snapshot.sh` starts `db broker web` by name and pins `-f $STACK/docker-compose.yml`, so this stack's `COMPOSE_FILE` overrides never reach a snapshot. It is **not checked out in this workspace** at the time of writing; nothing below depends on it.
+- **`docker-image-arks-service`** — *historical.* A former sibling repository that built a shareable bundle from this stack's app image plus a PostgreSQL image already holding the imported legacy data (port 8001, project name `arkservice-image`, its own `make snapshot` / `make bundle` / `make load` / `make reset`; none of those targets exist here). It has been removed from the workspace and is not on GitHub; the only trace left in this stack is that the image label and `make prune` were designed not to touch a snapshot's tagged image. Nothing below depends on it. (The workspace's `CLAUDE.md`, which described it, is a file of the surrounding `arks-redesign` workspace, not of this repository.)
 - **`ark-endpoints`** — a persistent MySQL and Valkey standing in for production's external servers, plus a Makefile that drives *this* stack against them without editing any file here. Section 9 explains how.
 
 ---
@@ -451,9 +451,13 @@ random_secret() {
 
 Letters and digits only, 48 of them, because the value ends up in a URL, a shell, a Makefile and Compose interpolation, each with its own special characters. `generate_secret` refuses to write a value under 32 characters (Django's boot guard would treat it as unset, and the script would never regenerate it because it is no longer blank). `fill_if_blank` touches a key only when its current value is empty after stripping a trailing `\r`. `BROKER_PASSWORD` is different: it is generated only when `.env` has **no such line at all**, because a line that exists but is blank means "this server has no authentication" and must be respected.
 
-### The percent-encoding rule
+### The password rule: container versus external server
 
-User names and passwords are substituted into URLs (`DATABASE_URL`, `CELERY_BROKER_URL`, `REDIS_URL`). Anything but letters and digits must be percent-encoded in `.env`: `@` → `%40`, `/` → `%2F`, `#` → `%23`, `%` → `%25`, `:` → `%3A`. Generated secrets never need it; a password you were given might.
+User names and passwords are substituted into URLs (`DATABASE_URL`, `CELERY_BROKER_URL`, `REDIS_URL`), but for the stack's own containers they are *also* handed to the server raw: `docker-compose.yml` passes `BROKER_PASSWORD` unencoded to `--requirepass` and encoded into the client URLs (which redis-py decodes), `POSTGRES_PASSWORD` raw to the `db` container and into `DATABASE_URL`, and `docker-compose.mysql.yml` does the same with `MYSQL_PASSWORD`. A value that is percent-encoded for the URL therefore does not match what the server was given, and a raw special character breaks the URL. So:
+
+- **Container passwords (PostgreSQL, MySQL container, broker): letters and digits only.** Generated secrets already are.
+- **External servers (`docker-compose.external-db.yml`, `docker-compose.external-broker.yml`): percent-encode.** There the value only ever enters a URL, so a password you were given is written as `@` → `%40`, `/` → `%2F`, `#` → `%23`, `%` → `%25`, `:` → `%3A`.
+- **Either way, `$` is Compose interpolation** inside a `.env` value: a literal `$` is written `$$`.
 
 ---
 
@@ -649,7 +653,7 @@ MYSQL_HOST=mysql.example.utoronto.ca
 MYSQL_PORT=3306
 MYSQL_DATABASE=ark
 MYSQL_USER=ark
-MYSQL_PASSWORD=<letters and digits, or percent-encoded>
+MYSQL_PASSWORD=<the server's password, percent-encoded if it is not letters and digits; $ as $$>
 ```
 
 then `make up`. What must already be true on that server, and what the stack does:
@@ -864,7 +868,7 @@ sequenceDiagram
 - Nothing is mounted and nothing enters the image; the export can live anywhere on the machine (`../legacy/ARK_CORE.sql` is the convention). `.sql.gz` works everywhere a `.sql` does and copies faster.
 - **Rehearse against a database container, never against production.** With the external-db override on, the import writes into that server; the `CONFIRM=yes` rule exists for exactly this.
 - PostgreSQL is a fair rehearsal for totals; what it cannot show is how MySQL sorts or compares a given string. For that, switch to `docker-compose.mysql.yml` first.
-- Expected totals for the September 2026 production export (219 MB, 3.0M rows): arks created 97,596; minted at recovered 97,595; bindings created 2,758,369; elements merged 2,743; resolutions 70,898; redirects skipped 1,606. `make manage ARGS="ark_stats"` then shows 77,649 bound (77,648 has also been seen). A second run creates nothing: the import is idempotent.
+- Expected totals for the September 2026 production export (219 MB, 3.0M rows): arks created 97,596; minted at recovered 97,595; bindings created 2,758,369; elements merged 2,743; resolutions 70,898; redirects skipped 1,606. `make manage ARGS="refresh_collection_stats"` (core) then shows 77,649 bound (77,648 has also been seen); `ark_stats` shows the same but is an arks-cli plugin command. A second run creates nothing: the import is idempotent.
 - The report (`import-report.csv`, header `reason,table,ark_path,element,value`) lists every row that could not be carried over verbatim: `duplicate-element` (a CR-suffixed twin lost to the clean spelling) and `redirect-for-unknown-ark` (hit counts for paths that were never ARKs).
 - The cutover gate from inside the stack:
 
@@ -889,7 +893,7 @@ docker compose cp web:/data/cutover-diff.csv .
 | See what runs | `make ps`; `docker compose ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'` |
 | Logs | `make logs` (all), `docker compose logs -f web`; json-file driver, 5 × 10 MB per container |
 | A shell | `make shell` (`/bin/sh` at `/app` as `app`); files you need to copy out go under `/data` |
-| Management command | `make manage ARGS="mint utsc 10"`; commands: `createcollection mint bind unbind bulk_bind export_arks ark_stats refresh_collection_stats flush_counters prune_bulk_jobs import_legacy resolve_diff` |
+| Management command | `make manage ARGS="refresh_collection_stats"`. Core (always present): `export_arks refresh_collection_stats flush_counters prune_bulk_jobs import_legacy resolve_diff check_manifests`. arks-cli plugin (only when built in with `ARKS_PLUGIN_SRC` + `ARKS_PLUGINS` and `make install`): `createcollection mint bind unbind bulk_bind ark_stats`, e.g. `make manage ARGS="mint utsc 10"` |
 | Health | `curl -s http://localhost:8000/healthz` → `{"status":"ok","checks":{"database":"ok","cache":"ok","counters":"ok"},"counters_flushed_ago":N}`; 503 and `degraded` otherwise. `counters_flushed_ago` far above 60 means the scheduler is not running |
 | Memory | `*_MEM_LIMIT` in `.env`, then `make up`. A container at its limit is killed and restarted (exit 137); `docker inspect --format '{{.State.OOMKilled}}' arkservice-worker-1` confirms |
 | Restarts | Automatic (`unless-stopped`) after a crash or host reboot unless stopped on purpose; `make down` removes containers so nothing restarts |

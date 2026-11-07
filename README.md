@@ -114,9 +114,9 @@ make shell       # a shell inside the web container
 
 The staff commands `createcollection`, `mint`, `bind`, `unbind`, `bulk_bind` and `ark_stats` are a separate, optional plugin: [`arks-cli`](../arks-cli). Everything they do can also be done in the staff interface.
 
-The image has **no plugin by default**: the `plugin` build context is `plugins-none/`, which installs nothing. Core keeps the operator commands (`import_legacy`, `resolve_diff`, `check_manifests`, `export_arks`, `flush_counters`, `refresh_collection_stats`, `prune_bulk_jobs`), so `make import-dump` and the cutover check work either way.
+The image has **no plugin by default**: the `plugin` build context is `plugins-none/`, which installs nothing, and those six commands are then simply absent (`make manage ARGS="mint ..."` answers `Unknown command`). Core keeps the operator commands (`import_legacy`, `resolve_diff`, `check_manifests`, `export_arks`, `flush_counters`, `refresh_collection_stats`, `prune_bulk_jobs`), so `make import-dump`, the cutover check and the collection counts work either way.
 
-To build the plugin in, put both lines in `.env` and rebuild:
+To build the plugin in, put both lines in `.env` and rebuild. The plugin is baked into the image, so this needs `make install`; a plain `make up` keeps an image that already exists and the commands stay missing:
 
 ```
 ARKS_PLUGIN_SRC=../arks-cli
@@ -232,9 +232,16 @@ A few variables are less free than they look:
   password is not stored with its data, so changing it is safe;
   `make down && make up` puts the new one into effect for the broker and the
   application together.
-- **User names and passwords are substituted into URLs.** Use letters and
-  digits. A password you cannot choose has to be percent-encoded in `.env`:
-  `@` as `%40`, `/` as `%2F`, `#` as `%23`, `%` as `%25`, `:` as `%3A`.
+- **Passwords for the stack's own containers: letters and digits only.** Each
+  of `POSTGRES_PASSWORD`, `MYSQL_PASSWORD` (container) and `BROKER_PASSWORD`
+  is handed to its server raw and to the application inside a URL, so a
+  character that needs percent-encoding in the URL is wrong for the server,
+  and the other way round. Percent-encoding is for an external server only
+  (`docker-compose.external-db.yml`, `docker-compose.external-broker.yml`),
+  where the value only ever enters a URL: there a password you cannot choose
+  is written as `@` → `%40`, `/` → `%2F`, `#` → `%23`, `%` → `%25`,
+  `:` → `%3A`. In every value, Compose treats `$` as interpolation: write a
+  literal `$` as `$$`.
 
 The file is gitignored: it holds this machine's secret key and administrator
 password, and is created mode 600. `make clean` deliberately keeps it.
@@ -327,8 +334,12 @@ Then run `make up`. The broker stays a container unless you also add the
 - **`make up` waits for the server.** The `db` service is never created, and
   `web`, `worker` and `scheduler` no longer wait for it. `web` only reports healthy once its
   `/healthz` check can reach the external server.
-- **`MYSQL_HOST` and `MYSQL_PASSWORD` have no default.** Compose refuses to
-  start without them and says which one is missing.
+- **`MYSQL_HOST` and `MYSQL_PASSWORD` have no default in the override.**
+  Compose refuses to start when either is unset and says which one is missing.
+  In practice only `MYSQL_HOST` is caught: `.env.example` ships
+  `MYSQL_PASSWORD=ark`, so the password guard fires only if that line is
+  removed. Replace the value; do not count on the stack to notice a password
+  you forgot to set.
 - **The containers must be able to reach the server.** From the containers'
   point of view `localhost` is the container itself. A MySQL server on the
   Docker host itself is `host.docker.internal` on Docker Desktop. On Linux it
@@ -514,8 +525,9 @@ share or a ticket attachment. Import it with `make import-dump`, which needs
 `CONFIRM=yes` against an external database, then `shred -u` it.
 
 The override needs Docker Compose 2.24.4 or later, which `make check`
-verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md` at
-the workspace root.
+verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md`, a
+working note in the surrounding `arks-redesign` workspace, not a file of this
+repository.
 
 ## Fallback pages
 
@@ -587,8 +599,10 @@ The file is copied into the running container, read there, and deleted again,
 whether the import succeeds or fails (the importer's exit status is passed
 on); nothing is mounted and nothing enters the image, so the export can sit
 anywhere on your machine. Against an external database it refuses without
-`CONFIRM=yes`, because it would write into that server. Every run leaves an `import-report.csv` here listing the rows
-that could not be carried over exactly as legacy held them.
+`CONFIRM=yes`, because it would write into that server. A run that succeeds
+(a dry run included) leaves an `import-report.csv` here listing the rows that
+could not be carried over exactly as legacy held them; a failed run leaves no
+report, only its exit status.
 
 Full walk-through in [docs/MIGRATION.md](docs/MIGRATION.md); what the migration actually
 does, and the real cutover runbook, are in

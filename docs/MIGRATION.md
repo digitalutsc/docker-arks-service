@@ -44,13 +44,14 @@ faster.
 make up                                             # if the stack is not up yet
 make import-dump DUMP=../legacy/ARK_CORE.sql ARGS="--dry-run"
 make import-dump DUMP=../legacy/ARK_CORE.sql
-make manage ARGS="ark_stats"
+make manage ARGS="refresh_collection_stats"          # counts per collection
 ```
 
 The dry run writes and rolls back inside one transaction, so it reports exactly
-what the real run will do without keeping any of it. Both runs leave an
-`import-report.csv` beside this README listing every row that could not be
-carried over verbatim — read it before the real run, not after.
+what the real run will do without keeping any of it. Each run that succeeds
+(the dry run too) leaves an `import-report.csv` beside this README listing
+every row that could not be carried over verbatim — read it before the real
+run, not after. A failed run leaves no report.
 
 For the September 2026 production export (219 MB, 3.0M rows) expect:
 
@@ -63,8 +64,11 @@ For the September 2026 production export (219 MB, 3.0M rows) expect:
   redirects skipped         1606
 ```
 
-`make manage ARGS="ark_stats"` then shows 77,649 of those ARKs as bound, leaving
-19,947 that legacy minted and never gave any metadata to.
+`make manage ARGS="refresh_collection_stats"` then shows 77,649 of those ARKs
+as bound, leaving 19,947 that legacy minted and never gave any metadata to. The
+same numbers are on the collection page in the staff interface. `ark_stats`,
+which prints them too, is an [arks-cli](../README.md#optional-the-arks-cli-command-line)
+plugin command and only exists when the plugin was built into the image.
 
 Running it a second time creates nothing: the import is idempotent, so you can
 rehearse as often as you like.
@@ -87,13 +91,19 @@ Worth checking by hand:
 - an **unbound ARK** answers 404 — a fifth of production was minted and never
   given a URL, and legacy answered those with its own 404 page
 - the **`?` page** lists the metadata, with entities decoded
-- **minting continues** where legacy stopped:
-  `make manage ARGS="mint dsu_ark 1"` gives `61220/utsc97640`. Only do that in a
+- **minting continues** where legacy stopped: minting one ARK on the
+  collection page of the staff interface, or `make manage ARGS="mint dsu_ark 1"`
+  with the arks-cli plugin built in, gives `61220/utsc97640`. Only do that in a
   rehearsal — it is a real mint.
 
 ## 4. Compare against the live legacy service
 
+`make import-dump` removed its copy of the report from the container when it
+finished, so put the one it copied out back where the container can see it
+first, then run the comparison:
+
 ```bash
+docker compose cp import-report.csv web:/data/import-report.csv
 make manage ARGS="resolve_diff \
     --legacy-base https://ark.digital.utsc.utoronto.ca \
     --new-base http://localhost:8000 \
@@ -104,9 +114,6 @@ This runs inside the `web` container, which can reach both the internet and its
 own port; `localhost` is always an allowed host. Start with `--sample`, then
 drop it for the full run and add `--out /data/cutover-diff.csv`, which
 `docker compose cp web:/data/cutover-diff.csv .` brings back out.
-
-To pass `--known`, put the report where the container can see it first:
-`docker compose cp import-report.csv web:/data/import-report.csv`.
 
 Two things to know. Every path it fetches increments that ARK's redirect counter
 on the legacy service. And a green result here is encouraging rather than
