@@ -41,6 +41,15 @@ WORKDIR /app
 COPY --from=src pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev --extra postgres --extra mysql
 
+# Optional plugin (e.g. the arks-cli command line): the build context named
+# 'plugin' is ARKS_PLUGIN_SRC, or plugins-none/ (no pyproject.toml) by default,
+# in which case nothing is installed and the image is arks-service alone. A
+# plugin also has to be enabled at run time with ARKS_PLUGINS in .env.
+COPY --from=plugin . /plugin
+RUN if [ -f /plugin/pyproject.toml ]; then \
+        uv pip install --python /app/.venv/bin/python --no-deps /plugin; \
+    fi && rm -rf /plugin
+
 # --- runtime ------------------------------------------------------------------
 FROM python:3.13-slim
 

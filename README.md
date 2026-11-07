@@ -100,14 +100,35 @@ machine drive the **same** stack and the same data, not two.
 `make` on its own lists every target. The useful extras:
 
 ```bash
+make manage ARGS="export_arks --collection utsc --out /data/utsc.csv"
 make manage ARGS="createcollection 'UTSC Digital Collections' \
-    --prefix utsc --naan 61220 --naa 'UTSC Library' --template .zd"
-make manage ARGS="mint utsc 10"
+    --prefix utsc --naan 61220 --naa 'UTSC Library' --template .zd"   # needs arks-cli, below
+make manage ARGS="mint utsc 10"                                       # needs arks-cli, below
 make import-dump DUMP=../legacy/ARK_CORE.sql   # rehearse the migration
 make logs        # follow every service
 make ps          # what is running
 make shell       # a shell inside the web container
 ```
+
+### Optional: the arks-cli command line
+
+The staff commands `createcollection`, `mint`, `bind`, `unbind`, `bulk_bind` and `ark_stats` are a separate, optional plugin: [`arks-cli`](../arks-cli). Everything they do can also be done in the staff interface.
+
+The image has **no plugin by default**: the `plugin` build context is `plugins-none/`, which installs nothing. Core keeps the operator commands (`import_legacy`, `resolve_diff`, `check_manifests`, `export_arks`, `flush_counters`, `refresh_collection_stats`, `prune_bulk_jobs`), so `make import-dump` and the cutover check work either way.
+
+To build the plugin in, put both lines in `.env` and rebuild:
+
+```
+ARKS_PLUGIN_SRC=../arks-cli
+ARKS_PLUGINS=arks_cli
+```
+
+```bash
+make install
+make manage ARGS="help"          # [arks_cli] lists the six commands
+```
+
+`ARKS_PLUGIN_SRC` decides what is installed in the image; `ARKS_PLUGINS` enables it at run time for `web`, `worker` and `scheduler`. Naming a plugin that is not in the image stops the service with a clear message. The plugin adds nothing measurable to the image (333 MB either way).
 
 ### Disk housekeeping
 

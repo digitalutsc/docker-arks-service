@@ -110,6 +110,8 @@ services:
       context: .
       additional_contexts:
         src: ${ARKS_SRC:-../arks-service}
+        # Optional plugin checkout (arks-cli); plugins-none/ installs nothing.
+        plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}
     restart: unless-stopped
     logging: *logging
     mem_limit: ${WEB_MEM_LIMIT:-1g}
@@ -170,6 +172,9 @@ services:
       # Shared with the worker through the anchor on purpose: the two must
       # agree on the caps. 0 removes the mint cap.
       MINT_MAX_PER_REQUEST: "${MINT_MAX_PER_REQUEST:-10000}"
+      # Optional plugins built into the image (ARKS_PLUGIN_SRC), e.g. arks_cli.
+      # Naming one that is not installed stops the service with a clear error.
+      ARKS_PLUGINS: "${ARKS_PLUGINS:-}"
       BULK_BIND_MAX_ROWS: "${BULK_BIND_MAX_ROWS:-100000}"
       BULK_BIND_MAX_BYTES: "${BULK_BIND_MAX_BYTES:-52428800}"
       BULK_BIND_RETENTION_DAYS: "${BULK_BIND_RETENTION_DAYS:-0}"

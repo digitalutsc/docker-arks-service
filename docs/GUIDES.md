@@ -70,6 +70,7 @@ graph LR
 ```
 
 - **`arks-service`** — the code. Renamed on GitHub from `arks-service-new` on 2026-10-30; the stack's default clone URL is `https://github.com/digitalutsc/arks-service.git`.
+- **`arks-cli`** — the optional staff command line (`createcollection`, `mint`, `bind`, `unbind`, `bulk_bind`, `ark_stats`), a separate plugin since 2026-11-07. The image includes it only when `ARKS_PLUGIN_SRC` points at a checkout; otherwise the `plugin` build context is `plugins-none/` and nothing is installed. It is enabled at run time with `ARKS_PLUGINS=arks_cli`, which the shared `environment` anchor passes to `web`, `worker` and `scheduler`.
 - **`docker-image-arks-service`** — per `CLAUDE.md`, a sibling repository that builds a shareable bundle: this stack's app image plus a PostgreSQL image already holding the imported legacy data, on port 8001 with project name `arkservice-image`, driven by `make snapshot` / `make bundle` / `make load` / `make reset`. Its `snapshot.sh` starts `db broker web` by name and pins `-f $STACK/docker-compose.yml`, so this stack's `COMPOSE_FILE` overrides never reach a snapshot. It is **not checked out in this workspace** at the time of writing; nothing below depends on it.
 - **`ark-endpoints`** — a persistent MySQL and Valkey standing in for production's external servers, plus a Makefile that drives *this* stack against them without editing any file here. Section 9 explains how.
 
@@ -94,6 +95,7 @@ docker-arks-service/
 │   ├── ensure-env.sh                     create .env, fill ARKS_SRC and blank secrets; never overwrite a set value
 │   ├── ensure-src.sh                     clone the application into ARKS_SRC if nothing is there; never touch a checkout
 │   └── bootstrap_admin.py                piped into `manage.py shell`: create the admin once, never alter it
+├── plugins-none/README.md               the default `plugin` build context: no pyproject.toml, so no plugin is installed
 ├── README.md                             operator documentation
 ├── docs/                                 every document but README.md
 │   ├── MIGRATION.md                      rehearsing the legacy import in this stack
@@ -158,7 +160,7 @@ The one server in `broker` holds **two logical databases**: `0` is the Celery qu
 
 | | `web` | `worker` | `scheduler` |
 |---|---|---|---|
-| Image | `arkservice-web:local`, **built here** (`build.context: .`, `additional_contexts.src: ${ARKS_SRC:-../arks-service}`) | `arkservice-web:local` (no build section; reuses web's) | `arkservice-web:local` |
+| Image | `arkservice-web:local`, **built here** (`build.context: .`, `additional_contexts.src: ${ARKS_SRC:-../arks-service}`, `additional_contexts.plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}`) | `arkservice-web:local` (no build section; reuses web's) | `arkservice-web:local` |
 | Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
 | depends_on | `db: service_healthy`, `broker: service_healthy` | db, broker, **web** healthy | db, broker, **web** healthy |
 | Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | none | none |
