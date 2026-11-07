@@ -17,7 +17,7 @@ here.
 PostgreSQL is a fair rehearsal because the schema stays inside the portable
 subset both engines share, and CI runs the whole suite against each. What it
 cannot tell you is how MySQL will sort or compare a particular string. For that,
-switch the stack to MySQL 8.0 first (see "Database" in [README.md](README.md))
+switch the stack to MySQL 8.0 first (see "Database" in [README.md](../README.md#database))
 and rehearse there. The dry run on the VM is still the last word, since its
 server version and collation may differ.
 
@@ -49,7 +49,8 @@ make manage ARGS="refresh_collection_stats"          # counts per collection
 
 The dry run writes and rolls back inside one transaction, so it reports exactly
 what the real run will do without keeping any of it. Each run that succeeds
-(the dry run too) leaves an `import-report.csv` beside this README listing
+(the dry run too) leaves an `import-report.csv` in the repository root (the
+directory you ran `make` from) listing
 every row that could not be carried over verbatim — read it before the real
 run, not after. A failed run leaves no report.
 
@@ -100,7 +101,8 @@ Worth checking by hand:
 
 `make import-dump` removed its copy of the report from the container when it
 finished, so put the one it copied out back where the container can see it
-first, then run the comparison:
+first, then run the comparison. Both commands run from the repository root,
+where `.env` and the report are:
 
 ```bash
 docker compose cp import-report.csv web:/data/import-report.csv
@@ -130,7 +132,8 @@ Or just re-run the import on top of itself; it is idempotent either way.
 
 ## Troubleshooting
 
-**`No such file:`** — `DUMP` is relative to this directory.
+**`No such file:`** — `DUMP` is relative to the repository root, where `make`
+runs, not to `docs/`.
 
 **`make import-dump` fails at the copy step** — the stack is not running.
 `make up`.

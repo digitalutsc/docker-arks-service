@@ -923,7 +923,7 @@ docker compose cp web:/data/cutover-diff.csv .
 | Build fails at `uv sync --frozen` | `uv.lock` out of date with `pyproject.toml` | `uv lock` in the application, commit, `make install` |
 | Application stops at start with a parse error on a setting | A numeric/boolean `.env` line left blank (`DB_READ_TIMEOUT=`) | Comment the line out |
 | `make import-dump` fails at the copy step | Stack not running (`docker compose cp` needs a live container) | `make up` |
-| `make import-dump`: "No such file" | `DUMP` is relative to this directory | Use the right path |
+| `make import-dump`: "No such file" | `DUMP` is relative to the repository root, where `make` runs | Use the right path |
 | Import: "is not valid utf-8" | Export in another encoding | Re-export with `--default-character-set=utf8mb4`, or `ARGS="--encoding latin-1"` |
 | Import: "No space left on device" | Export copied into the container's writable layer | Use `.sql.gz`, or enlarge Docker's disk |
 | Container restarts with exit code 137 | Memory limit reached | `docker inspect --format '{{.State.OOMKilled}}'`; raise the matching `*_MEM_LIMIT`, `make up` |
