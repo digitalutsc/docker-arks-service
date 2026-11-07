@@ -424,7 +424,7 @@ Two parsers read `.env`: Compose's dotenv and the Makefile's `sed`. They agree o
 | `BULK_BIND_MAX_ROWS` / `BULK_BIND_MAX_BYTES` | `"100000"` / `"52428800"` | Upload ceilings |
 | `BULK_BIND_RETENTION_DAYS` | `"0"` | 0 keeps jobs forever |
 | `CELERY_TASK_TIME_LIMIT` | `"3600"` | Hard job limit |
-| `MANIFEST_TOTAL_TIMEOUT` / `MANIFEST_MAX_CONCURRENT` | `"10"` / `"4"` | `/manifest` fetch budget per process |
+| `MANIFEST_FETCH_TIMEOUT` / `MANIFEST_TOTAL_TIMEOUT` / `MANIFEST_MAX_CONCURRENT` | `"30"` / `"30"` / `"4"` | `/manifest` fetch budget per read, per fetch, and fetches at once per process |
 | `COLLECTION_STATS_SECONDS` | `"300"` | Stored-count refresh |
 | `SORT_SUBQUERY_MAX_ROWS` | `"50000"` | Redirects/Elements sort ceiling |
 | `EXPORT_SYNC_MAX_ROWS` | `"100000"` | UI export ceiling |

@@ -180,7 +180,8 @@ so comment a line out rather than blanking it.
 | `BULK_BIND_MAX_BYTES` | `52428800` | Largest bulk-bind upload, in bytes (50 MB). A proxy in front needs a request-body limit at least this large |
 | `BULK_BIND_RETENTION_DAYS` | `0` | Days to keep finished bulk-bind jobs and their results files (uploads are deleted as soon as a job has run). `0` keeps them forever |
 | `CELERY_TASK_TIME_LIMIT` | `3600` | Seconds a background job may run before Celery stops it |
-| `MANIFEST_TOTAL_TIMEOUT` | `10` | Seconds a `/manifest` fetch may take in all |
+| `MANIFEST_FETCH_TIMEOUT` | `30` | Seconds a `/manifest` fetch may wait for each read (on-demand manifests send nothing until built) |
+| `MANIFEST_TOTAL_TIMEOUT` | `30` | Seconds a `/manifest` fetch may take in all, as in legacy; keep it under gunicorn's 60 s |
 | `MANIFEST_MAX_CONCURRENT` | `4` | `/manifest` fetches at once per gunicorn process; more get 503 with `Retry-After` |
 | `COLLECTION_STATS_SECONDS` | `300` | How often the stored collection counts shown on staff pages are refreshed |
 | `SORT_SUBQUERY_MAX_ROWS` | `50000` | The most ARKs a staff list may hold and still offer the Redirects and Elements sorts |
