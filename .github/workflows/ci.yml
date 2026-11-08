@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# The stack builds the application from a checkout of digitalutsc/arks-service
+# placed beside this one, where `make env` finds it as ../arks-service, exactly
+# as on a workstation. The plugin leg also checks out digitalutsc/arks-cli
+# beside it. Both repositories are private: give this one a read-only token for
+# them as the secret ARKS_SERVICE_TOKEN (a fine-grained token with Contents:
+# read on arks-service and arks-cli). The two refs below pick their branches.
+env:
+  ARKS_SERVICE_REF: main
+  ARKS_CLI_REF: main
+
+jobs:
+  static:
+    # Everything that needs no image: the scripts, every Compose combination
+    # .env.example offers, and the .env bootstrap.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Every Compose combination parses
+        # The combinations are read from .env.example, so a file added there is
+        # checked without touching this workflow. Compose interpolates required
+        # values even for `config`; these are placeholders, nothing connects.
+        env:
+          DJANGO_SECRET_KEY: placeholder-for-compose-config
+          MYSQL_HOST: placeholder.invalid
+          MYSQL_PASSWORD: placeholder
+          BROKER_HOST: placeholder.invalid
+        run: |
+          docker compose version
+          combos=$(printf 'docker-compose.yml\n'; sed -n 's/^#COMPOSE_FILE=//p' .env.example)
+          test "$(printf '%s\n' "$combos" | wc -l)" -ge 5
+          for files in $combos; do
+            echo "== $files"
+            COMPOSE_FILE=$files docker compose config -q
+          done
+
+      - name: make env creates .env once and never rewrites it
+        run: |
+          make env
+          test "$(stat -c %a .env)" = 600
+          grep -qx 'ARKS_SRC=./src/arks-service' .env
+          for key in DJANGO_SECRET_KEY DJANGO_SUPERUSER_PASSWORD BROKER_PASSWORD; do
+            value=$(sed -n "s/^$key=//p" .env)
+            test "${#value}" -ge 32 || { echo "::error::$key was not generated"; exit 1; }
+          done
+          before=$(sha256sum .env)
+          make env
+          test "$(sha256sum .env)" = "$before" || { echo "::error::a second make env changed .env"; exit 1; }
+
+  smoke:
+    # Builds the image and brings the whole stack up with `make up`, as an
+    # operator would, then checks it serves. Two legs: the development default
+    # (PostgreSQL, no plugin), and the production engine with the arks-cli
+    # plugin built in and operator fallback pages mounted.
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: postgres
+            compose_file: ""
+            plugin: false
+          - leg: mysql + arks-cli
+            compose_file: docker-compose.yml:docker-compose.mysql.yml
+            plugin: true
+    name: smoke (${{ matrix.leg }})
+    defaults:
+      run:
+        working-directory: docker-arks-service
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: docker-arks-service
+
+      - name: Check the token for the application repositories
+        env:
+          TOKEN: ${{ secrets.ARKS_SERVICE_TOKEN }}
+        run: |
+          test -n "$TOKEN" || {
+            echo "::error::Set the secret ARKS_SERVICE_TOKEN: a read-only token for digitalutsc/arks-service and digitalutsc/arks-cli."
+            exit 1
+          }
+
+      - name: Check out arks-service beside it
+        uses: actions/checkout@v4
+        with:
+          repository: digitalutsc/arks-service
+          ref: ${{ env.ARKS_SERVICE_REF }}
+          token: ${{ secrets.ARKS_SERVICE_TOKEN }}
+          path: arks-service
+
+      - name: Check out arks-cli beside it
+        if: matrix.plugin
+        uses: actions/checkout@v4
+        with:
+          repository: digitalutsc/arks-cli
+          ref: ${{ env.ARKS_CLI_REF }}
+          token: ${{ secrets.ARKS_SERVICE_TOKEN }}
+          path: arks-cli
+
+      - name: Write .env
+        env:
+          COMPOSE_FILE_LINE: ${{ matrix.compose_file }}
+          PLUGIN: ${{ matrix.plugin }}
+        run: |
+          make env
+          grep -qx 'ARKS_SRC=../arks-service' .env
+          if [ -n "$COMPOSE_FILE_LINE" ]; then
+            echo "COMPOSE_FILE=$COMPOSE_FILE_LINE" >> .env
+          fi
+          if [ "$PLUGIN" = true ]; then
+            {
+              echo "ARKS_PLUGIN_SRC=../arks-cli"
+              echo "ARKS_PLUGINS=arks_cli"
+              echo "FALLBACK_DIR=../arks-service/docs/fallback-example"
+            } >> .env
+          fi
+
+      - name: make up
+        run: make up
+
+      - name: The stack serves
+        run: |
+          curl -fsS http://localhost:8000/healthz
+          curl -fsS -o /dev/null http://localhost:8000/
+          curl -fsS -o /dev/null http://localhost:8000/admin/login/
+          # An unknown NAAN is a 404, never a redirect elsewhere.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/ark:/99999/nothing)
+          test "$code" = 404 || { echo "::error::unknown ARK answered $code"; exit 1; }
+
+      - name: make up created the administrator
+        run: |
+          docker compose exec -T web python manage.py shell -c "
+          from django.contrib.auth import get_user_model
+          assert get_user_model().objects.filter(username='admin', is_superuser=True).exists()
+          "
+
+      - name: The worker and the scheduler answer through the broker
+        run: |
+          docker compose exec -T worker celery -A arkservice inspect ping --timeout 10 | tee ping.txt
+          grep -q '2 nodes online' ping.txt
+
+      - name: Without the plugin, its commands are absent
+        if: ${{ !matrix.plugin }}
+        run: |
+          if docker compose exec -T web python manage.py mint ci 1 2> err.txt; then
+            echo "::error::mint ran although no plugin was built in"; exit 1
+          fi
+          grep -q "Unknown command" err.txt
+
+      - name: With the plugin, mint, bind and resolve
+        if: matrix.plugin
+        run: |
+          manage() { docker compose exec -T web python manage.py "$@"; }
+          manage createcollection "CI collection" --prefix ci --naan 99999 --naa "CI" --template .zd
+          manage mint ci 1 > minted.txt
+          ark=$(head -1 minted.txt)
+          echo "minted $ark"
+          manage bind "$ark" URL https://example.org/ci
+          got=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://localhost:8000/ark:/$ark")
+          test "$got" = "302 https://example.org/ci" || { echo "::error::resolver answered: $got"; exit 1; }
+          curl -fsS "http://localhost:8000/ark:/$ark?info" > info.txt
+          grep -q '^erc:' info.txt
+          manage flush_counters
+          manage ark_stats
+
+      - name: The mounted fallback pages are served, placeholders filled in
+        if: matrix.plugin
+        run: |
+          curl -fsS http://localhost:8000/ > landing.html
+          grep -q 'Persistent identifiers' landing.html
+          if grep -q '{{' landing.html; then
+            echo "::error::the landing page still has a placeholder in it"; exit 1
+          fi
+          curl -fsS -o /dev/null http://localhost:8000/fallback/style.css
+
+      - name: Without FALLBACK_DIR, no fallback pages are served
+        if: ${{ !matrix.plugin }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/fallback/style.css)
+          test "$code" = 404 || { echo "::error::/fallback/style.css answered $code"; exit 1; }
+
+      - name: A second make up changes nothing
+        run: |
+          before=$(sha256sum .env)
+          make up
+          test "$(sha256sum .env)" = "$before"
+
+      - name: Logs
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color --tail 300 || true
+
+      - name: make clean
+        if: always()
+        run: |
+          make clean
+          # The throwaway key lets Compose run even if .env was never written.
+          test -z "$(DJANGO_SECRET_KEY=unused docker compose ps -aq)"
