@@ -196,7 +196,7 @@ sequenceDiagram
   U->>M: make up
   M->>M: env check src  (prerequisite targets, in that order)
   M->>E: ./scripts/ensure-env.sh
-  E->>E: cp .env.example .env (if absent); chmod 600
+  E->>E: cp .env.example .env (if absent), then chmod 600
   E->>E: ARKS_SRC blank? → ../arks-service if it has manage.py, else ./src/arks-service
   E->>E: fill DJANGO_SECRET_KEY, DJANGO_SUPERUSER_PASSWORD if blank
   E->>E: append BROKER_PASSWORD only if no such line exists
@@ -206,8 +206,8 @@ sequenceDiagram
   S->>S: else path empty? git clone $ARKS_REPO [--branch $ARKS_REF] → verify manage.py
   M->>C: docker image inspect arkservice-web:local || docker compose build --pull
   M->>C: docker compose up -d --wait --remove-orphans
-  C->>DB: start; healthcheck pg_isready (15 s)
-  C->>BR: start; healthcheck redis-cli ping|grep PONG (15 s)
+  C->>DB: start, healthcheck pg_isready (15 s)
+  C->>BR: start, healthcheck redis-cli ping|grep PONG (15 s)
   DB-->>C: healthy
   BR-->>C: healthy
   C->>W: start: python manage.py migrate --no-input && exec gunicorn …
@@ -216,7 +216,7 @@ sequenceDiagram
   C->>WK: start worker (-Q celery) and scheduler (-Q periodic --beat)
   C-->>M: --wait returns (or fails after ~3 min → printed help, exit 1, containers keep running)
   M->>A: docker compose exec -T -e DJANGO_SUPERUSER_* web python manage.py shell --no-imports < scripts/bootstrap_admin.py
-  A->>A: user absent → create_superuser, print password; present → "left unchanged"
+  A->>A: user absent → create_superuser, print password, else "left unchanged"
   M->>U: make info: addresses, "Sign in as admin", where the password lives
 ```
 
@@ -862,7 +862,7 @@ sequenceDiagram
     M->>W: cp web:/data/import-report.csv ./import-report.csv
   end
   M->>W: exec -T web rm -f /data/legacy-dump.sql /data/import-report.csv   (always)
-  M-->>O: "Review report copied to: import-report.csv"  or  "import-dump failed (exit N); the copy of the export was removed from the container."
+  M-->>O: "Review report copied to: import-report.csv"  or  "import-dump failed (exit N), the copy of the export was removed from the container."
 ```
 
 - Nothing is mounted and nothing enters the image; the export can live anywhere on the machine (`../legacy/ARK_CORE.sql` is the convention). `.sql.gz` works everywhere a `.sql` does and copies faster.
