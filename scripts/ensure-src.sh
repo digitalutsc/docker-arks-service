@@ -20,8 +20,39 @@ if [ -z "$src" ]; then
     exit 1
 fi
 
+# Say when the checkout is not where ARKS_REF points. The image is built from
+# the checkout, whatever ARKS_REF says, so changing ARKS_REF alone would
+# otherwise rebuild the old code without a word. Only a note: the checkout may
+# be a working tree someone is developing in, and `make update` is the way to
+# move it.
+note_ref_mismatch() {
+    ref=$(current_value ARKS_REF)
+    [ -n "$ref" ] || return 0
+    head=$(git -C "$src" rev-parse --quiet --verify HEAD 2>/dev/null || true)
+    [ -n "$head" ] || return 0
+    want=$(git -C "$src" rev-parse --quiet --verify "refs/tags/$ref^{commit}" 2>/dev/null || true)
+    if [ -z "$want" ]; then
+        branch=$(git -C "$src" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+        [ "$branch" = "$ref" ] && return 0
+        want=$(git -C "$src" rev-parse --quiet --verify "$ref^{commit}" 2>/dev/null || true)
+    fi
+    [ "$want" = "$head" ] && return 0
+    {
+        echo
+        if [ -z "$want" ]; then
+            echo "  Note: ARKS_REF is $ref, which this checkout does not know yet."
+        else
+            echo "  Note: ARKS_REF is $ref, but this checkout is at $at."
+        fi
+        echo "  The image is built from the checkout as it is. Run \`make update\` to move it to ARKS_REF."
+        echo
+    } >&2
+}
+
 if [ -f "$src/manage.py" ]; then
-    echo "Application source: $src"
+    at=$(git -C "$src" describe --tags --always --dirty 2>/dev/null || true)
+    echo "Application source: $src${at:+ ($at)}"
+    note_ref_mismatch
     exit 0
 fi
 

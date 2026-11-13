@@ -2,6 +2,7 @@
 #
 #   make up        bring everything up, from nothing if need be
 #   make install   the same, but always rebuild the image first
+#   make update    move the application checkout to ARKS_REF, then install
 #   make down      stop it, keeping the data
 #   make clean     remove it entirely, data and image included
 #   make rebuild   clean, then install
@@ -18,7 +19,7 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help check env src build install up down clean rebuild prune rollback confirm-external admin info logs ps shell manage import-dump backup-media
+.PHONY: help check env src build install update up down clean rebuild prune rollback confirm-external admin info logs ps shell manage import-dump backup-media
 
 COMPOSE ?= docker compose
 IMAGE := arkservice-web:local
@@ -101,6 +102,15 @@ up: env check src ## Bring the whole stack up, from nothing if need be
 
 install: build up ## The same as up, but always rebuild the image first
 	@docker image prune -f --filter label=$(LABEL) >/dev/null
+
+# The checkout is only ever moved here, by name. ARKS_REF in .env says where
+# to: a release tag (the checkout then sits exactly on it), a branch (fast-
+# forwarded to origin's latest), or blank for the default branch. It refuses
+# on uncommitted changes and never discards commits. `make build` and `make
+# up` leave the checkout alone and only say when it is not at ARKS_REF.
+update: env check ## Move the application checkout to ARKS_REF (tag or branch), then install
+	@./scripts/update-src.sh
+	@$(MAKE) --no-print-directory install
 
 # --remove-orphans here and in up: a container for a service the Compose
 # files no longer define (such as redis, before it was renamed broker) would

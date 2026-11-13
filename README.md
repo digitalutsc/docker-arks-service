@@ -62,6 +62,7 @@ make down        # stop it, keeping the data
 make clean       # remove it entirely: containers, volumes, image
 make rebuild     # clean, then install
 make prune       # free disk: this stack's dangling images and stale build cache
+make update      # move the application checkout to ARKS_REF (tag or branch), then install
 make rollback    # go back to the image the last build replaced
 make backup-media  # save the media volume (bulk-bind result files) to ./backups
 ```
@@ -134,6 +135,23 @@ make manage ARGS="help"          # [arks_cli] lists the six commands
 
 ### Releases, rollback and backups
 
+`ARKS_REF` in `.env` names the application release the stack should run. To
+move to one:
+
+```bash
+# in .env:  ARKS_REF=v1.2.0
+make update          # fetch, check out ARKS_REF in the application checkout, then make install
+```
+
+A tag puts the checkout exactly on that release. A branch is fast-forwarded to
+its latest commit, and a blank `ARKS_REF` means the default branch. `make
+update` refuses when the checkout has uncommitted changes and never discards
+commits, so it is safe to run where the checkout is someone's working tree.
+
+Nothing else moves the checkout. `make up` and `make install` build whatever
+it is on; when that is not `ARKS_REF`, they print a note saying so and
+carry on.
+
 `make build` and `make install` label the image with what the application
 checkout is at (`git describe`: the release tag when it sits on one), and
 `make info` prints it as *Image revision*. The image a build replaces is kept
@@ -181,7 +199,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 |---|---|---|
 | `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service` if one is there, otherwise `./src/arks-service` |
 | `ARKS_REPO` | empty | Where to clone the application from when `ARKS_SRC` has nothing in it. Empty means the same host and organisation this repository was cloned from |
-| `ARKS_REF` | empty | Branch or tag to clone. Empty means the default branch |
+| `ARKS_REF` | empty | The release to run: a tag, a branch, or empty for the default branch. Checked out on the first clone and by `make update`; see [Releases, rollback and backups](#releases-rollback-and-backups) |
 | `ARKS_PORT` | `8000` | Host port the stack listens on |
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
