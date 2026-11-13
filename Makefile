@@ -25,6 +25,10 @@ IMAGE := arkservice-web:local
 # The image the last build replaced, kept so `make rollback` has something to
 # go back to. One generation only: the build before that is pruned.
 PREV := arkservice-web:prev
+# Holds the current image by name while a build runs. With the containerd
+# image store an image whose only tag has moved is gone at once, so it cannot
+# be tagged as $(PREV) afterwards by its ID.
+STAGED := arkservice-web:replaced-by-build
 # The Dockerfile labels the image with this, so pruning can be limited to
 # images this stack built and leave every other project's alone.
 LABEL := org.utsc.arkservice=app
@@ -50,6 +54,9 @@ COMPOSE_FILES = $${COMPOSE_FILE:-$(call ENVGET,COMPOSE_FILE)}
 # What the application checkout is at, for the image's revision label: the
 # release tag when it sits on one, otherwise the nearest tag or the commit.
 REVISION = $$(git -C "$(call ENVGET,ARKS_SRC)" describe --tags --always --dirty 2>/dev/null || echo unknown)
+# What an image is made of: its layers and labels. Not its ID, which with
+# build attestations is different for every build, even of the same thing.
+CONTENT_OF = $$(docker image inspect -f '{{.RootFS.Layers}} {{.Config.Labels}}' $(1) 2>/dev/null || true)
 # The label back out of an image.
 REVISION_OF = $$(docker image inspect -f '{{index .Config.Labels "org.utsc.arkservice.revision"}}' $(1) 2>/dev/null | grep -v '^<no value>$$' | grep . || echo unknown)
 
@@ -132,15 +139,18 @@ confirm-external:
 # image the old containers were still running only dangles once up has
 # replaced them.
 #
-# The image a build replaces is kept as $(PREV) for `make rollback`. It is
-# tagged only after the build has succeeded and only if the build produced a
-# different image, so a failed or unchanged build leaves the previous
-# rollback point alone.
+# The image a build replaces is kept as $(PREV) for `make rollback`. It
+# becomes $(PREV) only after the build has succeeded and only if the build
+# produced different layers or labels, so a failed or unchanged build leaves the
+# previous rollback point alone. Until then it is held as $(STAGED).
 build: env check src ## Build the application image
-	@old=$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null || true); \
-	ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull || exit 1; \
-	new=$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null || true); \
-	if [ -n "$$old" ] && [ "$$old" != "$$new" ]; then docker tag "$$old" $(PREV); fi
+	@old=$(call CONTENT_OF,$(IMAGE)); \
+	if [ -n "$$old" ]; then docker tag $(IMAGE) $(STAGED); fi; \
+	ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull \
+	  || { docker image rm $(STAGED) >/dev/null 2>&1; exit 1; }; \
+	new=$(call CONTENT_OF,$(IMAGE)); \
+	if [ -n "$$old" ] && [ "$$old" != "$$new" ]; then docker tag $(STAGED) $(PREV); fi; \
+	docker image rm $(STAGED) >/dev/null 2>&1 || true
 	@docker image prune -f --filter label=$(LABEL) >/dev/null
 
 # Swaps the two tags, so a second rollback undoes the first. Only the code
