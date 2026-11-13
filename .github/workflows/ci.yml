@@ -36,6 +36,7 @@ jobs:
           MYSQL_HOST: placeholder.invalid
           MYSQL_PASSWORD: placeholder
           BROKER_HOST: placeholder.invalid
+          ARKS_BIND_ADDRESS: 127.0.0.1
         run: |
           docker compose version
           combos=$(printf 'docker-compose.yml\n'; sed -n 's/^#COMPOSE_FILE=//p' .env.example)

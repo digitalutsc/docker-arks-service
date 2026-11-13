@@ -190,6 +190,7 @@ so comment a line out rather than blanking it.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `ARKS_BIND_ADDRESS` | none | Only with `docker-compose.remote-proxy.yml`, which requires it: this host's private address, where `web` is published for a proxy on another machine. See [Behind a proxy on another machine](#behind-a-proxy-on-another-machine) |
 | `TRUST_FORWARDED_FOR` | `false`; `true` with `docker-compose.proxy.yml` | Take the client address from `X-Forwarded-For` (the entry the proxy appended) for the login throttle. Only safe when nothing but the proxy can reach the port, which is what the proxy override arranges |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Comma-separated `https://` origins allowed to post forms. Only needed when a form is posted from a different hostname than the one that served it |
 | `SECURE_HSTS_SECONDS` | `0` | HSTS lifetime. Leave 0 until TLS is known good on the hostname, then raise it |
@@ -528,6 +529,68 @@ The override needs Docker Compose 2.24.4 or later, which `make check`
 verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md`, a
 working note in the surrounding `arks-redesign` workspace, not a file of this
 repository.
+
+## Behind a proxy on another machine
+
+When TLS is terminated by a proxy on a different server (nginx on a gateway,
+say), `docker-compose.proxy.yml` does not fit: it publishes `web` on
+loopback, which only a proxy on this host can reach. Use
+`docker-compose.remote-proxy.yml` in its place, last in `COMPOSE_FILE`, never
+together with it:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.remote-proxy.yml
+ARKS_BIND_ADDRESS=10.0.0.12
+ARKS_EXTRA_HOSTS=ark.digital.utsc.utoronto.ca
+```
+
+What the override changes:
+
+- **`web` publishes its port on `ARKS_BIND_ADDRESS` only**, the address of
+  this host's private interface. It has no default: without it Compose stops
+  with a message instead of publishing gunicorn on every interface.
+- **The session and CSRF cookies are marked Secure**, as with the other proxy
+  file.
+- **`TRUST_FORWARDED_FOR` stays `false`** until you set it, because here the
+  port is on a network and the binding alone does not say who can reach it.
+
+Three things the file cannot do for you, in this order:
+
+1. **Firewall the port to the proxy.** Docker's published ports bypass the
+   host firewall (`ufw` included); the `DOCKER-USER` chain is the place Docker
+   leaves alone:
+
+   ```sh
+   iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8000 \
+            --ctdir ORIGINAL ! -s <proxy address> -j DROP
+   ```
+
+   Make it persistent (`iptables-persistent` or the distribution's
+   equivalent) and check from a third machine that the port does not answer.
+   Without this rule anything on that network can send
+   `X-Forwarded-Proto: https`, which the application believes whenever
+   `DJANGO_DEBUG` is false.
+2. **Have the proxy set the forwarded headers, not pass them on.** For nginx:
+
+   ```nginx
+   proxy_set_header Host              $host;
+   proxy_set_header X-Forwarded-Proto https;
+   proxy_set_header X-Forwarded-For   $remote_addr;
+   proxy_pass       http://10.0.0.12:8000;
+   ```
+
+   `proxy_pass` without a path, so the request URI reaches gunicorn as it was
+   sent; a body limit of at least `BULK_BIND_MAX_BYTES` on the bulk-bind
+   upload; and a keep-alive to the stack shorter than gunicorn's 5 s.
+3. **Then set `TRUST_FORWARDED_FOR=true`** in `.env` and `make up`, so the
+   login throttle counts per client instead of treating every visitor as the
+   proxy. The application takes the last entry of `X-Forwarded-For`, so the
+   hop nearest the stack must be the one writing the real client address; if
+   something sits between the proxy and the stack that does not, leave it
+   `false` for the paths that go through it.
+
+Check the inflection the same way as behind Apache:
+`curl -sI 'https://<host>/ark:/61220/<id>?' | head -1` must be `200`, not `302`.
 
 ## Fallback pages
 

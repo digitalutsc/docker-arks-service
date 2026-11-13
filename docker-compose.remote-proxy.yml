@@ -1,0 +1,72 @@
+# Opt-in override: run the stack behind a TLS reverse proxy on ANOTHER machine
+# (nginx on a gateway server, for instance). Enable it by adding it to
+# COMPOSE_FILE in .env, after the files that choose the database and broker,
+# and setting ARKS_BIND_ADDRESS:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.remote-proxy.yml
+#   ARKS_BIND_ADDRESS=10.0.0.12
+#
+# It is the alternative to docker-compose.proxy.yml, not an addition to it:
+# that file is for a proxy on this host and publishes on loopback, which a
+# proxy on another machine cannot reach. Use one or the other.
+#
+# What changes:
+#   - web publishes its port on ARKS_BIND_ADDRESS only: the address of this
+#     host's private interface, the one the proxy connects to. There is no
+#     default on purpose. Without a value Compose stops with a message, rather
+#     than publishing gunicorn on every interface.
+#   - The session and CSRF cookies are marked Secure, so the browser only
+#     sends them over HTTPS.
+#   - TRUST_FORWARDED_FOR stays false until .env says otherwise. See below.
+#
+# The binding alone is not enough. Anything on that network can still reach
+# the port, send X-Forwarded-Proto: https (which the application believes
+# whenever DJANGO_DEBUG is false) and, with TRUST_FORWARDED_FOR on, a made-up
+# X-Forwarded-For for every sign-in attempt, which defeats the login lockout.
+# Docker's published ports also bypass the host firewall (ufw included). So:
+#
+#   1. Allow only the proxy to reach the port, in the DOCKER-USER chain, which
+#      Docker consults before its own rules and never rewrites:
+#
+#        iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8000 \
+#                 --ctdir ORIGINAL ! -s <proxy address> -j DROP
+#
+#      (--ctorigdstport because the destination has already been rewritten to
+#      the container by the time the packet gets here; use ARKS_PORT if you
+#      changed it.) Make the rule persistent, and check it from a third
+#      machine: the port must not answer.
+#   2. Have the proxy SET X-Forwarded-Proto to https and X-Forwarded-For to
+#      the client address, replacing whatever the client sent, and pass the
+#      Host header through unchanged.
+#   3. Only then set TRUST_FORWARDED_FOR=true in .env, so the login throttle
+#      counts per client rather than treating every visitor as the proxy. The
+#      application takes the LAST entry of X-Forwarded-For, so the hop nearest
+#      the stack must be the one that writes the real client address.
+#
+# ARKS_EXTRA_HOSTS must name the public hostname. See README.md.
+#
+# The cookie settings are repeated per service: the base file shares its
+# environment through a YAML anchor, which is expanded before the files are
+# merged, so each service is overridden on its own.
+#
+# The !override tag needs Docker Compose 2.24.4 or later; `make check` says so.
+
+services:
+  web:
+    ports: !override ["${ARKS_BIND_ADDRESS:?set ARKS_BIND_ADDRESS in .env to this host's private address, the one the proxy connects to}:${ARKS_PORT:-8000}:8000"]
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"
+
+  worker:
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"
+
+  scheduler:
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"

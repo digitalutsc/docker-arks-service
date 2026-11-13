@@ -42,14 +42,16 @@ COMPOSE_FILES = $${COMPOSE_FILE:-$(call ENVGET,COMPOSE_FILE)}
 # Compose interpolates every mandatory value for every command it runs,
 # tearing down included: DJANGO_SECRET_KEY always, MYSQL_HOST and
 # MYSQL_PASSWORD under docker-compose.external-db.yml, and BROKER_HOST under
-# docker-compose.external-broker.yml. Taking the stack apart
+# docker-compose.external-broker.yml, and ARKS_BIND_ADDRESS under
+# docker-compose.remote-proxy.yml. Taking the stack apart
 # should not depend on a .env that may be blank or gone, so teardown supplies
 # throwaway values; they reach no container and no server, because down starts
 # nothing and connects to nothing.
 TEARDOWN_ENV := DJANGO_SECRET_KEY=unused-while-tearing-the-stack-down \
                 MYSQL_HOST=unused-while-tearing-the-stack-down \
                 MYSQL_PASSWORD=unused-while-tearing-the-stack-down \
-                BROKER_HOST=unused-while-tearing-the-stack-down
+                BROKER_HOST=unused-while-tearing-the-stack-down \
+                ARKS_BIND_ADDRESS=127.0.0.1
 
 help: ## Show this help
 	@sed -n 's/^\([a-z-]*\):.*## \(.*\)/\1|\2/p' $(MAKEFILE_LIST) | awk -F'|' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -143,7 +145,7 @@ check: ## Check that Docker and Compose v2 are there
 	@case "$(COMPOSE_FILES)" in *mysql*|*external*|*proxy*) \
 	  v=$$($(COMPOSE) version --short 2>/dev/null | sed 's/^v//'); \
 	  echo "$$v" | awk -F. '{ exit !($$1 > 2 || ($$1 == 2 && ($$2 > 24 || ($$2 == 24 && $$3 + 0 >= 4)))) }' \
-	    || { echo "docker-compose.mysql.yml, docker-compose.proxy.yml and the external-db/external-broker files need Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
+	    || { echo "docker-compose.mysql.yml, the proxy and remote-proxy files and the external-db/external-broker files need Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
 	esac
 
 env: ## Create .env if absent and fill in the application path and any blank secrets

@@ -87,6 +87,7 @@ docker-arks-service/
 ├── docker-compose.external-db.yml        override (production): an existing MySQL server, no db container
 ├── docker-compose.external-broker.yml    override (production): an existing Valkey/Redis server, no broker container
 ├── docker-compose.proxy.yml              override: behind Apache/TLS on the same host (loopback port, Secure cookies)
+├── docker-compose.remote-proxy.yml       override: behind a TLS proxy on another machine (ARKS_BIND_ADDRESS port, Secure cookies)
 ├── .env.example                          every setting with its comment; `make up` copies it to .env
 ├── .env                                  THIS MACHINE's settings and secrets (gitignored, mode 600)
 ├── .dockerignore                         keeps .env, exports, CSVs and src/ out of the main build context
@@ -602,6 +603,24 @@ services:
 - Cookies Secure, `TRUST_FORWARDED_FOR` flips its default to true (overridable from `.env`).
 - Must come **last** in `COMPOSE_FILE`, after the files that choose database and broker.
 
+### `docker-compose.remote-proxy.yml`
+
+```yaml
+services:
+  web:
+    ports: !override ["${ARKS_BIND_ADDRESS:?…}:${ARKS_PORT:-8000}:8000"]
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"
+  worker:    (the three environment keys)
+  scheduler: (the three environment keys)
+```
+
+- For a proxy on **another** machine; the alternative to `docker-compose.proxy.yml`, never combined with it (both `!override` the same `ports`, so the later file would silently win).
+- `ARKS_BIND_ADDRESS` is required, so a missing value stops Compose rather than publishing on every interface. `TEARDOWN_ENV` and CI supply a placeholder.
+- `TRUST_FORWARDED_FOR` keeps its false default: the port is on a network, and only a `DOCKER-USER` rule limiting it to the proxy makes the header trustworthy. The file's header and the README give the rule.
+
 ### Valid combinations
 
 | `COMPOSE_FILE` | Database | Broker | Port | Use |
@@ -613,8 +632,9 @@ services:
 | `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml` | existing MySQL | existing Valkey/Redis | all | what `ark-endpoints/` runs (no Apache locally) |
 | `…yml:docker-compose.mysql.yml:docker-compose.proxy.yml` | MySQL container | container | 127.0.0.1 | staging VM behind Apache |
 | `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.proxy.yml` | existing MySQL | existing Valkey/Redis | 127.0.0.1 | **full production** |
+| `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.remote-proxy.yml` | existing MySQL | existing Valkey/Redis | `ARKS_BIND_ADDRESS` | production behind a proxy on another machine |
 
-Invalid: `mysql.yml` together with `external-db.yml` (both define `db`; the later one wins, but the intent is contradictory).
+Invalid: `proxy.yml` together with `remote-proxy.yml` (one or the other). Invalid: `mysql.yml` together with `external-db.yml` (both define `db`; the later one wins, but the intent is contradictory).
 
 ### Dev versus production topology
 
