@@ -123,6 +123,10 @@ services:
         src: ${ARKS_SRC:-../arks-service}
         # Optional plugin checkout (arks-cli); plugins-none/ installs nothing.
         plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}
+      # Recorded as a label on the image, so `make info` can say what is
+      # running. The Makefile fills it in from the application checkout.
+      args:
+        ARKS_REVISION: ${ARKS_REVISION:-unknown}
     restart: unless-stopped
     logging: *logging
     <<: *hardening
@@ -244,6 +248,19 @@ services:
     stop_grace_period: 120s
     environment: *env
     volumes: [media:/data/media]
+    # Asks this container's own Celery node to answer through the broker, so
+    # a worker that is running but no longer consuming shows as unhealthy in
+    # `make ps` instead of looking fine. Docker does not restart an unhealthy
+    # container; this is for the operator and for `make up`, which waits for
+    # it. The first checks come every 5 s so a start is not held up; after
+    # that, once a minute, because each one starts a Python process.
+    healthcheck: &celery-health
+      test: ["CMD-SHELL", "celery -A arkservice inspect ping -d celery@$$HOSTNAME --timeout 10 >/dev/null 2>&1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     depends_on:
       db: {condition: service_healthy}
       broker: {condition: service_healthy}
@@ -261,11 +278,16 @@ services:
     logging: *logging
     <<: *hardening
     pids_limit: 256
-    mem_limit: ${SCHEDULER_MEM_LIMIT:-256m}
+    # Room for the scheduler (about 120 MB) and its health check (about 70 MB).
+    mem_limit: ${SCHEDULER_MEM_LIMIT:-384m}
     command: celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info
     stop_grace_period: 30s
     environment: *env
     volumes: [media:/data/media]
+    # The same check as the worker. This node runs one task at a time in its
+    # own process, so it cannot answer while a task is running: three misses
+    # in a row (three minutes) are needed before it is called unhealthy.
+    healthcheck: *celery-health
     depends_on:
       db: {condition: service_healthy}
       broker: {condition: service_healthy}

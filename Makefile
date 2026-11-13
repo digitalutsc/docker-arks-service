@@ -6,6 +6,8 @@
 #   make clean     remove it entirely, data and image included
 #   make rebuild   clean, then install
 #   make prune     remove this stack's dangling images and stale build cache
+#   make rollback  go back to the image the last build replaced
+#   make backup-media  save the media volume to BACKUP_DIR
 #
 # clean and rebuild ask first when COMPOSE_FILE names an external server, and
 # import-dump into an external database refuses; CONFIRM=yes for either.
@@ -16,16 +18,22 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help check env src build install up down clean rebuild prune confirm-external admin info logs ps shell manage import-dump
+.PHONY: help check env src build install up down clean rebuild prune rollback confirm-external admin info logs ps shell manage import-dump backup-media
 
 COMPOSE ?= docker compose
 IMAGE := arkservice-web:local
+# The image the last build replaced, kept so `make rollback` has something to
+# go back to. One generation only: the build before that is pruned.
+PREV := arkservice-web:prev
 # The Dockerfile labels the image with this, so pruning can be limited to
 # images this stack built and leave every other project's alone.
 LABEL := org.utsc.arkservice=app
 
 # Where `make import-dump` leaves the review CSV it brings back out.
 REPORT ?= import-report.csv
+
+# Where `make backup-media` writes its archives.
+BACKUP_DIR ?= backups
 
 # yes skips the question clean and rebuild ask on a machine whose COMPOSE_FILE
 # names an external server, and lets import-dump write into an external database.
@@ -38,6 +46,12 @@ ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -1)
 # The Compose files in use, as Compose itself picks them: COMPOSE_FILE from
 # the environment if it is set there, otherwise from .env.
 COMPOSE_FILES = $${COMPOSE_FILE:-$(call ENVGET,COMPOSE_FILE)}
+
+# What the application checkout is at, for the image's revision label: the
+# release tag when it sits on one, otherwise the nearest tag or the commit.
+REVISION = $$(git -C "$(call ENVGET,ARKS_SRC)" describe --tags --always --dirty 2>/dev/null || echo unknown)
+# The label back out of an image.
+REVISION_OF = $$(docker image inspect -f '{{index .Config.Labels "org.utsc.arkservice.revision"}}' $(1) 2>/dev/null | grep -v '^<no value>$$' | grep . || echo unknown)
 
 # Compose interpolates every mandatory value for every command it runs,
 # tearing down included: DJANGO_SECRET_KEY always, MYSQL_HOST and
@@ -60,7 +74,7 @@ help: ## Show this help
 # checkout that is already there is left alone, the image is only built when
 # there is none, and an existing administrator keeps its password.
 up: env check src ## Bring the whole stack up, from nothing if need be
-	@docker image inspect $(IMAGE) >/dev/null 2>&1 || $(COMPOSE) build --pull
+	@docker image inspect $(IMAGE) >/dev/null 2>&1 || ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull
 	@$(COMPOSE) up -d --wait --remove-orphans || { \
 	  echo; \
 	  echo "  The stack did not become healthy in time. A first start can take several"; \
@@ -89,7 +103,7 @@ down: ## Stop the stack, keeping the data
 
 clean: confirm-external ## Remove the stack entirely: containers, volumes and the built image
 	@$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans
-	@docker image rm -f $(IMAGE) >/dev/null 2>&1 || true
+	@docker image rm -f $(IMAGE) $(PREV) >/dev/null 2>&1 || true
 	@echo "Stack removed. .env was kept: it holds this machine's secret key and admin password."
 	@echo "An external database or broker (the docker-compose.external-*.yml files) is never touched by clean."
 
@@ -117,9 +131,31 @@ confirm-external:
 # other projects' images stay. install prunes again after up, because the
 # image the old containers were still running only dangles once up has
 # replaced them.
+#
+# The image a build replaces is kept as $(PREV) for `make rollback`. It is
+# tagged only after the build has succeeded and only if the build produced a
+# different image, so a failed or unchanged build leaves the previous
+# rollback point alone.
 build: env check src ## Build the application image
-	@$(COMPOSE) build --pull
+	@old=$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null || true); \
+	ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull || exit 1; \
+	new=$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null || true); \
+	if [ -n "$$old" ] && [ "$$old" != "$$new" ]; then docker tag "$$old" $(PREV); fi
 	@docker image prune -f --filter label=$(LABEL) >/dev/null
+
+# Swaps the two tags, so a second rollback undoes the first. Only the code
+# goes back: web runs `migrate` on start, which never un-applies a migration,
+# so the database keeps the newer schema. Check the release notes first.
+rollback: check ## Go back to the image the last build replaced, and restart on it
+	@docker image inspect $(PREV) >/dev/null 2>&1 || { \
+	  echo "There is no $(PREV) image: no build has replaced one on this machine."; exit 1; }
+	@cur=$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null || true); \
+	echo "Rolling back from $(call REVISION_OF,$(IMAGE)) to $(call REVISION_OF,$(PREV)) ..."; \
+	docker tag $(PREV) $(IMAGE); \
+	if [ -n "$$cur" ]; then docker tag "$$cur" $(PREV); fi
+	@$(COMPOSE) up -d --wait --remove-orphans
+	@echo "Now running $(call REVISION_OF,$(IMAGE)). Migrations were not reversed."
+	@echo "make rollback again returns to the newer image."
 
 # Build cache records carry no image labels, so they cannot be picked out by
 # this stack's label; the cache prune takes unused build cache older than a
@@ -140,13 +176,12 @@ prune: ## Remove this stack's dangling images and stale build cache; list old ta
 check: ## Check that Docker and Compose v2 are there
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed."; exit 1; }
 	@$(COMPOSE) version >/dev/null 2>&1 || { echo "docker compose v2 is required."; exit 1; }
-	@# The MySQL, external and proxy overrides use !override and !reset, which
-	@# older Compose rejects with a parse error that does not say why.
-	@case "$(COMPOSE_FILES)" in *mysql*|*external*|*proxy*) \
-	  v=$$($(COMPOSE) version --short 2>/dev/null | sed 's/^v//'); \
-	  echo "$$v" | awk -F. '{ exit !($$1 > 2 || ($$1 == 2 && ($$2 > 24 || ($$2 == 24 && $$3 + 0 >= 4)))) }' \
-	    || { echo "docker-compose.mysql.yml, the proxy and remote-proxy files and the external-db/external-broker files need Docker Compose 2.24.4 or later (found $$v)."; exit 1; } ;; \
-	esac
+	@# The overrides use !override and !reset, and the health checks use
+	@# start_interval; older Compose rejects each with an error that does not
+	@# say why.
+	@v=$$($(COMPOSE) version --short 2>/dev/null | sed 's/^v//'); \
+	echo "$$v" | awk -F. '{ exit !($$1 > 2 || ($$1 == 2 && ($$2 > 24 || ($$2 == 24 && $$3 + 0 >= 4)))) }' \
+	  || { echo "This stack needs Docker Compose 2.24.4 or later (found $$v)."; exit 1; }
 
 env: ## Create .env if absent and fill in the application path and any blank secrets
 	@./scripts/ensure-env.sh
@@ -164,13 +199,32 @@ admin: ## Create the administrator account from .env, or leave it alone
 	  -e DJANGO_SUPERUSER_PASSWORD="$$pass" \
 	  web python manage.py shell --no-imports < scripts/bootstrap_admin.py
 
+# Behind a proxy the addresses that work are the public ones: web answers on
+# loopback (or ARKS_BIND_ADDRESS) for the proxy only, the cookies are Secure,
+# and Django refuses a Host it was not told about.
 info: ## Print the stack's address and administrator login
 	@port="$(call ENVGET,ARKS_PORT)"; port="$${port:-8000}"; \
 	user="$(call ENVGET,DJANGO_SUPERUSER_USERNAME)"; \
+	hosts="$(call ENVGET,ARKS_EXTRA_HOSTS)"; public="$${hosts%%,*}"; \
+	listen=; \
+	case "$(COMPOSE_FILES)" in \
+	  *remote-proxy*) listen="$(call ENVGET,ARKS_BIND_ADDRESS):$$port" ;; \
+	  *proxy*) listen="127.0.0.1:$$port" ;; \
+	esac; \
 	echo; \
-	echo "  Public resolver   http://localhost:$$port/"; \
-	echo "  Staff interface   http://localhost:$$port/admin/"; \
+	if [ -z "$$listen" ]; then \
+	  echo "  Public resolver   http://localhost:$$port/"; \
+	  echo "  Staff interface   http://localhost:$$port/admin/"; \
+	elif [ -n "$$public" ]; then \
+	  echo "  Public resolver   https://$$public/"; \
+	  echo "  Staff interface   https://$$public/admin/"; \
+	  echo "  Through the proxy; web itself listens on $$listen."; \
+	else \
+	  echo "  web listens on $$listen, for the proxy. Set ARKS_EXTRA_HOSTS in .env to"; \
+	  echo "  the public hostname: Django refuses any other."; \
+	fi; \
 	echo "  Sign in as        $$user"; \
+	echo "  Image revision    $(call REVISION_OF,$(IMAGE))"; \
 	echo; \
 	if [ -n "$(call ENVGET,DJANGO_SUPERUSER_PASSWORD)" ]; then \
 	  echo "  The initial password is DJANGO_SUPERUSER_PASSWORD in .env, which make clean"; \
@@ -230,3 +284,18 @@ import-dump: ## Import a legacy export: make import-dump DUMP=/path/ark.sql [ARG
 	if [ $$status -eq 0 ]; then echo "Review report copied to: $(REPORT)"; \
 	else echo "import-dump failed (exit $$status); the copy of the export was removed from the container."; fi; \
 	exit $$status
+
+# The media volume holds the result files of bulk-bind jobs; everything else
+# is in the database, which has its own backups, or in the broker, which holds
+# nothing that outlives a restart for long. Streamed out of the running web
+# container, so no other image is needed. Written under a temporary name and
+# renamed, so a failed run never leaves something that looks like a backup.
+# Restore: docker compose exec -T web tar xzf - -C /data/media < FILE
+backup-media: ## Save the media volume to BACKUP_DIR: make backup-media [BACKUP_DIR=/path]
+	@umask 077; mkdir -p "$(BACKUP_DIR)" || exit 1; \
+	out="$(BACKUP_DIR)/media-$$(date +%Y%m%d-%H%M%S).tgz"; \
+	if $(COMPOSE) exec -T web tar czf - -C /data/media . > "$$out.part"; then \
+	  mv "$$out.part" "$$out"; echo "Media volume saved to $$out"; \
+	else \
+	  rm -f "$$out.part"; echo "backup-media failed; is the stack up (make ps)?"; exit 1; \
+	fi

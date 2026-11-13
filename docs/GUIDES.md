@@ -164,9 +164,9 @@ The one server in `broker` holds **two logical databases**: `0` is the Celery qu
 | Image | `arkservice-web:local`, **built here** (`build.context: .`, `additional_contexts.src: ${ARKS_SRC:-../arks-service}`, `additional_contexts.plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}`) | `arkservice-web:local` (no build section; reuses web's) | `arkservice-web:local` |
 | Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --access-logformat '…'"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
 | depends_on | `db: service_healthy`, `broker: service_healthy` | db, broker, **web** healthy | db, broker, **web** healthy |
-| Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | none | none |
+| Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | `celery -A arkservice inspect ping -d celery@$HOSTNAME --timeout 10`: every 60 s (every 5 s during the 60 s start period), 20 s timeout, 3 retries | the same; it runs one task at a time, so it cannot answer during a task |
 | restart | `unless-stopped` | `unless-stopped` | `unless-stopped` |
-| mem_limit | `${WEB_MEM_LIMIT:-1g}` | `${WORKER_MEM_LIMIT:-2g}` | `${SCHEDULER_MEM_LIMIT:-256m}` |
+| mem_limit | `${WEB_MEM_LIMIT:-1g}` | `${WORKER_MEM_LIMIT:-2g}` | `${SCHEDULER_MEM_LIMIT:-384m}` (the scheduler, about 120 MB, plus its health check, about 70 MB) |
 | Privileges | `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit: 512` | the same | the same, `pids_limit: 256` |
 | stop_grace_period | 35 s (above gunicorn's 30 s graceful timeout) | 120 s (let a running bulk bind finish) | 30 s |
 | Volumes | `media:/data/media` | `media:/data/media` | `media:/data/media` |
@@ -301,12 +301,14 @@ Compose interpolates every `${VAR:?message}` for *every* command, `down` include
 | `clean` | `confirm-external` | `$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans`; `docker image rm -f $(IMAGE)` | Removes containers, the volumes of whichever services the current `COMPOSE_FILE` declares, and the image. **Keeps `.env`** ("it holds this machine's secret key and admin password"). Never touches an external database or broker |
 | `rebuild` | `confirm-external clean install` | — | Blow away and start from scratch |
 | `prune` | — | `docker image prune -f --filter label=$(LABEL)`; `docker builder prune -f --filter until=24h`; list other `arkservice-*` tags | Build-cache prune is **not** label-scoped (cache carries no labels), so it is Docker-wide for cache older than a day. Other tags are listed, never removed |
+| `rollback` | `check` | swap the `arkservice-web:local` and `arkservice-web:prev` tags; `$(COMPOSE) up -d --wait --remove-orphans` | `build` keeps the image it replaced as `:prev`, tagged only after a successful build that produced a different image. Migrations are not reversed. A second `rollback` undoes the first |
+| `backup-media` | — | `$(COMPOSE) exec -T web tar czf - -C /data/media .` into `$(BACKUP_DIR)/media-<date>-<time>.tgz` (default `backups/`, gitignored), written as `.part` and renamed | Needs the stack up. Restore with `tar xzf - -C /data/media` through the same `exec -T` |
 
 ### Guard targets
 
 | Target | What it checks | Message |
 |---|---|---|
-| `check` | `docker` on PATH; `docker compose version` works; if `COMPOSE_FILES` matches `*mysql*\|*external*\|*proxy*`, Compose version ≥ 2.24.4 via an `awk` comparison on `version --short` | "docker-compose.mysql.yml, docker-compose.proxy.yml and the external-db/external-broker files need Docker Compose 2.24.4 or later (found $v)." |
+| `check` | `docker` on PATH; `docker compose version` works; Compose version ≥ 2.24.4 via an `awk` comparison on `version --short` (the overrides use `!override`/`!reset`, the health checks `start_interval`) | "This stack needs Docker Compose 2.24.4 or later (found $v)." |
 | `confirm-external` | If `COMPOSE_FILES` contains `external`: `CONFIRM=yes` → pass; otherwise prompt `Type yes to go ahead:` and abort with "Nothing done." on anything else | "COMPOSE_FILE uses an external database or broker: this looks like production. This stops the service and removes the stack's containers, volumes and image. The external servers themselves are not touched." |
 
 The reasoning in the Makefile comment: `clean` never touches the external server, but a machine configured that way *is* production, where taking the stack apart is an outage and drops the broker container's queued jobs. A development stack names no external file and is never asked.
@@ -318,7 +320,7 @@ The reasoning in the Makefile comment: `clean` never touches the external server
 | `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC` and `DJANGO_SECRET_KEY` when blank; adds `DJANGO_SUPERUSER_PASSWORD` and `BROKER_PASSWORD` only when the line is absent, so a blank line stays blank |
 | `src` | `env`, then `./scripts/ensure-src.sh` | Clones the application into `ARKS_SRC` if nothing is there |
 | `admin` | `$(COMPOSE) exec -T -e DJANGO_SUPERUSER_USERNAME=… -e …EMAIL=… -e …PASSWORD=… web python manage.py shell --no-imports < scripts/bootstrap_admin.py` | Credentials are passed on that one `exec`, never put in the service definition or the image |
-| `info` | prints `Public resolver http://localhost:$port/`, `Staff interface http://localhost:$port/admin/`, `Sign in as $user` and where the password is | `$port` defaults to 8000 if `ARKS_PORT` is blank |
+| `info` | prints the resolver and staff addresses (`http://localhost:$port/` directly; `https://<first ARKS_EXTRA_HOSTS>/` and where `web` listens when `COMPOSE_FILES` names a proxy file), `Sign in as $user`, the image's revision label and what to do about the password | `$port` defaults to 8000 if `ARKS_PORT` is blank |
 
 ### Everyday targets
 
@@ -383,7 +385,7 @@ Two parsers read `.env`: Compose's dotenv and the Makefile's `sed`. They agree o
 | `ARKS_EXTRA_HOSTS` | empty | Appended to `DJANGO_ALLOWED_HOSTS` after `localhost,127.0.0.1` |
 | `COMPOSE_FILE` | commented out | The override list (section 8) |
 | `BROKER_IMAGE` | `valkey/valkey:8-alpine` | `redis:7-alpine` for Redis |
-| `WEB_MEM_LIMIT` / `WORKER_MEM_LIMIT` / `SCHEDULER_MEM_LIMIT` / `BROKER_MEM_LIMIT` | `1g` / `2g` / `256m` / `256m` | Docker `mem_limit` per container |
+| `WEB_MEM_LIMIT` / `WORKER_MEM_LIMIT` / `SCHEDULER_MEM_LIMIT` / `BROKER_MEM_LIMIT` | `1g` / `2g` / `384m` / `256m` | Docker `mem_limit` per container |
 | `BROKER_MAXMEMORY` | `200mb` | Valkey/Redis `--maxmemory`; keep below `BROKER_MEM_LIMIT` |
 | `DJANGO_SUPERUSER_USERNAME` / `_EMAIL` / `_PASSWORD` | `admin` / `admin@example.org` / generated | Only used by `make admin` |
 

@@ -104,6 +104,12 @@ RUN find /app -path /app/.venv -prune -o -name '__pycache__' -type d -prune -exe
     && DJANGO_DEBUG=false ARKSERVICE_SKIP_CONFIG_CHECK=1 \
        python manage.py collectstatic --no-input
 
+# Last, so a new revision rebuilds nothing above it. `make build` passes the
+# application checkout's `git describe`; a plain `docker compose build` leaves
+# it as unknown.
+ARG ARKS_REVISION=unknown
+LABEL org.utsc.arkservice.revision=$ARKS_REVISION
+
 EXPOSE 8000
 # No CMD: docker-compose.yml sets the command for every service (gunicorn for
 # web, Celery for worker and scheduler), so there is one place to change it.

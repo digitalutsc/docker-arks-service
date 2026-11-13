@@ -62,6 +62,8 @@ make down        # stop it, keeping the data
 make clean       # remove it entirely: containers, volumes, image
 make rebuild     # clean, then install
 make prune       # free disk: this stack's dangling images and stale build cache
+make rollback    # go back to the image the last build replaced
+make backup-media  # save the media volume (bulk-bind result files) to ./backups
 ```
 
 `make up` is the only one you need. It creates `.env` from `.env.example`,
@@ -129,6 +131,31 @@ make manage ARGS="help"          # [arks_cli] lists the six commands
 ```
 
 `ARKS_PLUGIN_SRC` decides what is installed in the image; `ARKS_PLUGINS` enables it at run time for `web`, `worker` and `scheduler`. Naming a plugin that is not in the image stops the service with a clear message. The plugin adds nothing measurable to the image (333 MB either way).
+
+### Releases, rollback and backups
+
+`make build` and `make install` label the image with what the application
+checkout is at (`git describe`: the release tag when it sits on one), and
+`make info` prints it as *Image revision*. The image a build replaces is kept
+as `arkservice-web:prev`, one generation only.
+
+```bash
+make rollback        # swap back to arkservice-web:prev and restart on it
+make rollback        # again: return to the newer image
+```
+
+Only the code goes back. `web` runs `migrate` on every start and that never
+un-applies a migration, so the database keeps the newer schema; check the
+release notes before rolling back across one.
+
+```bash
+make backup-media                      # ./backups/media-<date>-<time>.tgz, mode 600
+make backup-media BACKUP_DIR=/backup   # somewhere else
+docker compose exec -T web tar xzf - -C /data/media < backups/media-….tgz   # restore
+```
+
+The media volume holds the result files of bulk-bind jobs. Everything else
+that matters is in the database, which needs its own backups, and in `.env`.
 
 ### Disk housekeeping
 
@@ -209,7 +236,7 @@ so comment a line out rather than blanking it.
 | `COLLECTION_STATS_SECONDS` | `300` | How often the stored collection counts shown on staff pages are refreshed |
 | `SORT_SUBQUERY_MAX_ROWS` | `50000` | The most ARKs a staff list may hold and still offer the Redirects and Elements sorts |
 | `EXPORT_SYNC_MAX_ROWS` | `100000` | The largest export the staff interface serves itself; above it, it shows the equivalent `export_arks` command |
-| `WEB_MEM_LIMIT`, `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT`, `BROKER_MEM_LIMIT` | `1g`, `2g`, `256m`, `256m` | Memory ceiling per container. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
+| `WEB_MEM_LIMIT`, `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT`, `BROKER_MEM_LIMIT` | `1g`, `2g`, `384m`, `256m` | Memory ceiling per container. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
 | `BROKER_MAXMEMORY` | `200mb` | Valkey/Redis `--maxmemory` for the broker container. Keep it below `BROKER_MEM_LIMIT`: with `noeviction` a full broker refuses writes rather than being killed |
 
 `.env` is read by Compose and by the Makefile, which parse it slightly
@@ -647,6 +674,11 @@ empty `fallback/` directory is mounted and the application ignores it.
   proxy, so each line of `web`'s log also carries `fwd=` (`X-Forwarded-For`)
   and `real=` (`X-Real-IP`). They are as trustworthy as the port is closed to
   everything but the proxy.
+- **`worker` and `scheduler` have health checks**: each asks its own Celery
+  node to answer through the broker, so a process that is up but no longer
+  consuming shows as `unhealthy` in `make ps`, and `make up` waits for both.
+  Docker does not restart an unhealthy container; `docker compose restart
+  worker` does.
 - **Logs are capped**: Docker's `json-file` driver, five files of 10 MB per
   container. `make logs` reads them as before.
 - **Memory is capped per container**: `web` 1 GB, `worker` 2 GB,
