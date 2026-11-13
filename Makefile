@@ -44,13 +44,15 @@ BACKUP_DIR ?= backups
 # names an external server, and lets import-dump write into an external database.
 CONFIRM ?=
 
-# Read one value out of .env at recipe time. Not at parse time: `make up`
+# Read one value at recipe time, as Compose would: from the environment when
+# it is set there (even to nothing), otherwise from .env. Without the first
+# half, a stack driven by environment variables had Compose and this Makefile
+# disagreeing about, say, ARKS_EXTRA_HOSTS. Not at parse time: `make up`
 # creates .env during its own run, long after this file has been read.
-ENVGET = $$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -1)
+ENVGET = $${$(1)-$$(sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -1)}
 
-# The Compose files in use, as Compose itself picks them: COMPOSE_FILE from
-# the environment if it is set there, otherwise from .env.
-COMPOSE_FILES = $${COMPOSE_FILE:-$(call ENVGET,COMPOSE_FILE)}
+# The Compose files in use, as Compose itself picks them.
+COMPOSE_FILES = $(call ENVGET,COMPOSE_FILE)
 
 # What the application checkout is at, for the image's revision label: the
 # release tag when it sits on one, otherwise the nearest tag or the commit.
