@@ -213,3 +213,183 @@ jobs:
           make clean
           # The throwaway key lets Compose run even if .env was never written.
           test -z "$(DJANGO_SECRET_KEY=unused docker compose ps -aq)"
+
+  production:
+    # The production shape, started for real: an existing MySQL server reached
+    # over TLS (docker-compose.external-db.yml) and a proxy on another machine
+    # (docker-compose.remote-proxy.yml). A MySQL container published on the
+    # runner's own address stands in for the external server; it is not part
+    # of the stack, exactly as in production. This is also where the container
+    # hardening, the Celery health checks, the access-log fields and the
+    # rollback and backup targets are exercised.
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: smoke (external MySQL + remote proxy)
+    defaults:
+      run:
+        working-directory: docker-arks-service
+    env:
+      PUBLIC_HOST: ark.ci.example
+      DB_PASSWORD: cionlypassword
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: docker-arks-service
+
+      - name: Check the token for the application repository
+        env:
+          TOKEN: ${{ secrets.ARKS_SERVICE_TOKEN }}
+        run: |
+          test -n "$TOKEN" || {
+            echo "::error::Set the secret ARKS_SERVICE_TOKEN: a read-only token for digitalutsc/arks-service and digitalutsc/arks-cli."
+            exit 1
+          }
+
+      - name: Check out arks-service beside it
+        uses: actions/checkout@v4
+        with:
+          repository: digitalutsc/arks-service
+          ref: ${{ env.ARKS_SERVICE_REF }}
+          token: ${{ secrets.ARKS_SERVICE_TOKEN }}
+          path: arks-service
+
+      - name: Start the stand-in for the external MySQL server
+        run: |
+          addr=$(hostname -I | awk '{print $1}')
+          test -n "$addr"
+          echo "ADDR=$addr" >> "$GITHUB_ENV"
+          docker run -d --name ark-ci-mysql -p "$addr:3306:3306" \
+            -e MYSQL_DATABASE=ark -e MYSQL_USER=ark \
+            -e MYSQL_PASSWORD="$DB_PASSWORD" -e MYSQL_ROOT_PASSWORD="$DB_PASSWORD" \
+            mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
+          # Over TCP: while the image initialises it runs a temporary server
+          # with networking off, so this only passes once the real one is up.
+          for _ in $(seq 60); do
+            if docker exec ark-ci-mysql mysqladmin ping -h 127.0.0.1 -uark -p"$DB_PASSWORD" --silent 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ark-ci-mysql | tail -50
+          echo "::error::the MySQL stand-in did not come up"; exit 1
+
+      - name: Write .env
+        # Set in place where the template already has the key: a second line
+        # for the same key would leave two readers to agree on which one wins.
+        run: |
+          make env
+          set_env() {
+            if grep -q "^$1=" .env; then
+              sed -i "s|^$1=.*|$1=$2|" .env
+            else
+              echo "$1=$2" >> .env
+            fi
+          }
+          set_env COMPOSE_FILE docker-compose.yml:docker-compose.external-db.yml:docker-compose.remote-proxy.yml
+          set_env ARKS_BIND_ADDRESS "$ADDR"
+          set_env ARKS_EXTRA_HOSTS "$PUBLIC_HOST"
+          set_env TRUST_FORWARDED_FOR true
+          set_env MYSQL_HOST "$ADDR"
+          set_env MYSQL_PASSWORD "$DB_PASSWORD"
+          set_env MYSQL_URL_OPTIONS '?ssl_mode=REQUIRED'
+          grep -c '^MYSQL_HOST=' .env | grep -qx 1
+
+      - name: make up
+        run: make up
+
+      - name: web answers on the bind address only
+        run: |
+          curl -fsS -H "Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https' "http://$ADDR:8000/healthz"
+          if curl -s -m 5 -o /dev/null http://127.0.0.1:8000/healthz; then
+            echo "::error::web also answers on loopback: the port is not bound to ARKS_BIND_ADDRESS alone"; exit 1
+          fi
+
+      - name: The session and CSRF cookies are Secure
+        run: |
+          curl -fsS -D headers.txt -o /dev/null -H "Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https' \
+            "http://$ADDR:8000/admin/login/"
+          grep -i '^set-cookie: csrftoken=' headers.txt | grep -qi '; *secure' || {
+            cat headers.txt; echo "::error::the CSRF cookie is not marked Secure"; exit 1; }
+          docker compose exec -T web python manage.py shell -c "
+          from django.conf import settings
+          assert settings.SESSION_COOKIE_SECURE and settings.CSRF_COOKIE_SECURE
+          assert settings.TRUST_FORWARDED_FOR
+          "
+
+      - name: The connection to MySQL is encrypted
+        run: |
+          docker compose exec -T web python manage.py shell -c "
+          from django.db import connection
+          with connection.cursor() as cursor:
+              cursor.execute(\"SHOW SESSION STATUS LIKE 'Ssl_cipher'\")
+              cipher = cursor.fetchone()[1]
+          print('cipher:', cipher)
+          assert cipher, 'the session to MySQL is not encrypted'
+          "
+
+      - name: The application containers hold no capabilities
+        run: |
+          for service in web worker scheduler; do
+            id=$(docker compose ps -q "$service")
+            docker inspect -f '{{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}}' "$id" | tee caps.txt
+            grep -q 'ALL' caps.txt && grep -q 'no-new-privileges' caps.txt
+            effective=$(docker compose exec -T "$service" sh -c "sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status")
+            test "$effective" = 0000000000000000 || {
+              echo "::error::$service runs with capabilities $effective"; exit 1; }
+          done
+
+      - name: The worker and the scheduler are healthy
+        run: |
+          for service in worker scheduler; do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q "$service")")
+            test "$status" = healthy || { echo "::error::$service is $status"; exit 1; }
+          done
+
+      - name: The access log names the client
+        run: |
+          curl -s -o /dev/null -H "Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https' \
+            -H 'X-Forwarded-For: 203.0.113.9' -H 'X-Real-IP: 203.0.113.9' "http://$ADDR:8000/ark:/99999/nothing"
+          sleep 2
+          docker compose logs --no-color web | grep -q 'fwd=203.0.113.9 real=203.0.113.9' || {
+            docker compose logs --no-color --tail 20 web
+            echo "::error::the access log does not carry the forwarded address"; exit 1; }
+
+      - name: make info gives the public address
+        run: |
+          make info | tee info.txt
+          grep -q "https://$PUBLIC_HOST/admin/" info.txt
+          grep -q "listens on $ADDR:8000" info.txt
+
+      - name: make backup-media writes an archive
+        run: |
+          make backup-media
+          archive=$(ls backups/media-*.tgz)
+          tar tzf "$archive" > /dev/null
+          test "$(stat -c %a "$archive")" = 600
+
+      - name: make rollback swaps the images and comes back up
+        run: |
+          if make rollback; then
+            echo "::error::rollback went ahead with no previous image"; exit 1
+          fi
+          # No second build here, so stand the current image in as the previous one.
+          docker tag arkservice-web:local arkservice-web:prev
+          make rollback
+          curl -fsS -o /dev/null -H "Host: $PUBLIC_HOST" "http://$ADDR:8000/healthz"
+
+      - name: Logs
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color --tail 300 || true
+          docker logs ark-ci-mysql 2>&1 | tail -50 || true
+
+      - name: make clean leaves the external database alone
+        if: always()
+        run: |
+          make clean CONFIRM=yes
+          test -z "$(DJANGO_SECRET_KEY=unused MYSQL_HOST=unused MYSQL_PASSWORD=unused ARKS_BIND_ADDRESS=127.0.0.1 docker compose ps -aq)"
+          docker exec ark-ci-mysql mysql -uark -p"$DB_PASSWORD" ark -N -e 'SHOW TABLES' 2>/dev/null | grep -qx django_migrations
+          docker rm -f ark-ci-mysql
