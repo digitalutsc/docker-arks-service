@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  # Weekly, so a base image or dependency that has gone stale or picked up a
+  # known vulnerability is noticed even when nobody is committing.
+  schedule:
+    - cron: "17 9 * * 1"
 
 # The stack builds the application from a checkout of digitalutsc/arks-service
 # placed beside this one, where `make env` finds it as ../arks-service, exactly
@@ -393,3 +397,60 @@ jobs:
           test -z "$(DJANGO_SECRET_KEY=unused MYSQL_HOST=unused MYSQL_PASSWORD=unused ARKS_BIND_ADDRESS=127.0.0.1 docker compose ps -aq)"
           docker exec ark-ci-mysql mysql -uark -p"$DB_PASSWORD" ark -N -e 'SHOW TABLES' 2>/dev/null | grep -qx django_migrations
           docker rm -f ark-ci-mysql
+
+  scan:
+    # Builds the image as `make build` does (fresh base images, the locked
+    # Python dependencies) and looks it up against known vulnerabilities in
+    # its OS packages and Python packages. It fails only on High or Critical
+    # ones that already have a fix, which a rebuild or a dependency bump
+    # resolves; the full list is printed either way.
+    #
+    # Not on pull requests: what it finds comes from upstream, not from the
+    # change under review, so it would turn unrelated pull requests red. It
+    # runs on pushes to the default branch, weekly, and on demand.
+    #
+    # The action is pinned to a commit, with its release in the comment: a
+    # scanner runs with the image and the workspace in reach, and a tag can be
+    # moved.
+    if: github.event_name != 'pull_request'
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: scan (image vulnerabilities)
+    defaults:
+      run:
+        working-directory: docker-arks-service
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: docker-arks-service
+
+      - name: Check the token for the application repository
+        env:
+          TOKEN: ${{ secrets.ARKS_SERVICE_TOKEN }}
+        run: |
+          test -n "$TOKEN" || {
+            echo "::error::Set the secret ARKS_SERVICE_TOKEN: a read-only token for digitalutsc/arks-service and digitalutsc/arks-cli."
+            exit 1
+          }
+
+      - name: Check out arks-service beside it
+        uses: actions/checkout@v4
+        with:
+          repository: digitalutsc/arks-service
+          ref: ${{ env.ARKS_SERVICE_REF }}
+          token: ${{ secrets.ARKS_SERVICE_TOKEN }}
+          path: arks-service
+
+      - name: make build
+        run: make build
+
+      - name: Scan arkservice-web:local
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: arkservice-web:local
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
