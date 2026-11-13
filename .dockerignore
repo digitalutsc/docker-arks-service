@@ -11,3 +11,5 @@ src/
 .ipynb_checkpoints
 *.sql
 *.sql.gz
+# Where `make backup-media` writes.
+backups/

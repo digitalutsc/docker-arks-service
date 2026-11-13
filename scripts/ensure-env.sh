@@ -90,15 +90,25 @@ if [ -z "$(current_value ARKS_SRC)" ]; then
 fi
 
 fill_if_blank DJANGO_SECRET_KEY
-fill_if_blank DJANGO_SUPERUSER_PASSWORD
 
-# The broker password is generated only when .env has no BROKER_PASSWORD line
-# at all. A line that is there but blank was put there on purpose (a server
-# without authentication) and is left alone, unlike the two secrets above,
-# which the application cannot run without.
-if ! grep -q '^BROKER_PASSWORD=' .env; then
+# Generated only when .env has no line for the key at all. A line that is
+# there but blank was left that way on purpose and stays blank, unlike the
+# secret key above, which the application cannot run without.
+#
+# DJANGO_SUPERUSER_PASSWORD: only used to create the administrator. Once that
+# account has a password of its own, the operator blanks the line so the
+# initial password is no longer on disk.
+# BROKER_PASSWORD: blank means a server without authentication.
+generate_if_absent() {
+    key=$1
+    if grep -q "^$key=" .env; then
+        return
+    fi
     secret=$(generate_secret)
-    printf 'BROKER_PASSWORD=%s\n' "$secret" >> .env
+    printf '%s=%s\n' "$key" "$secret" >> .env
     chmod 600 .env
-    echo "Generated BROKER_PASSWORD in .env"
-fi
+    echo "Generated $key in .env"
+}
+
+generate_if_absent DJANGO_SUPERUSER_PASSWORD
+generate_if_absent BROKER_PASSWORD

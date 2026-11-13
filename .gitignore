@@ -21,3 +21,5 @@ cutover-diff.csv
 # Real fallback pages live outside the repository; only the mount point is kept.
 fallback/*
 !fallback/.keep
+# Where `make backup-media` writes.
+backups/

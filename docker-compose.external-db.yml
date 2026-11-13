@@ -31,6 +31,12 @@
 # The password goes into a URL, so use letters and digits, or percent-encode
 # anything else (@ as %40, / as %2F, # as %23, % as %25).
 #
+# TLS: set MYSQL_URL_OPTIONS=?ssl_mode=REQUIRED to encrypt the connection. It
+# is appended to the URL as written, so it starts with ? and joins further
+# options with &. REQUIRED encrypts without checking the server's certificate;
+# ?ssl_mode=VERIFY_CA&ssl_ca=/path/in/the/container checks it, and needs the
+# CA file mounted into web, worker and scheduler.
+#
 # The !reset tags need Docker Compose 2.24.4 or later; `make check` says so.
 
 services:
@@ -41,18 +47,18 @@ services:
   # expanded before the files are merged, so each service is overridden.
   web:
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}${MYSQL_URL_OPTIONS:-}
     depends_on:
       db: !reset
 
   worker:
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}${MYSQL_URL_OPTIONS:-}
     depends_on:
       db: !reset
 
   scheduler:
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}${MYSQL_URL_OPTIONS:-}
     depends_on:
       db: !reset

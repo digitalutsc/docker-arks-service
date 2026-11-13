@@ -50,7 +50,7 @@ docker compose config --quiet          # for each COMPOSE_FILE combination you t
 make up && make clean                  # the smoke test: the stack must come up healthy
 ```
 
-CI (`.github/workflows/ci.yml`) runs `static` (shellcheck, `docker compose config` for every `COMPOSE_FILE` line in `.env.example`, and checks that `make env` is idempotent) and `smoke` (`make up` on PostgreSQL, then on MySQL with arks-cli, resolver and worker checks, and `make clean`).
+CI (`.github/workflows/ci.yml`) runs `static` (shellcheck, `docker compose config` for every `COMPOSE_FILE` line in `.env.example`, and checks that `make env` is idempotent) and `smoke` (`make up` on PostgreSQL, then on MySQL with arks-cli, resolver and worker checks, and `make clean`) and `production` (`make up` against a MySQL server outside the stack over TLS, with `docker-compose.remote-proxy.yml`: the bind address, Secure cookies, dropped capabilities, the Celery health checks, the access-log fields, `make backup-media`, `make rollback`, and `make clean` leaving that server's data alone). Outside pull requests, `scan` builds the image and fails on High or Critical vulnerabilities that have a fix (Grype); the whole workflow also runs weekly.
 
 ## Conventions
 

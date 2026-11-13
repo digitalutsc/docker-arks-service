@@ -62,6 +62,9 @@ make down        # stop it, keeping the data
 make clean       # remove it entirely: containers, volumes, image
 make rebuild     # clean, then install
 make prune       # free disk: this stack's dangling images and stale build cache
+make update      # move the application checkout to ARKS_REF (tag or branch), then install
+make rollback    # go back to the image the last build replaced
+make backup-media  # save the media volume (bulk-bind result files) to ./backups
 ```
 
 `make up` is the only one you need. It creates `.env` from `.env.example`,
@@ -130,6 +133,48 @@ make manage ARGS="help"          # [arks_cli] lists the six commands
 
 `ARKS_PLUGIN_SRC` decides what is installed in the image; `ARKS_PLUGINS` enables it at run time for `web`, `worker` and `scheduler`. Naming a plugin that is not in the image stops the service with a clear message. The plugin adds nothing measurable to the image (333 MB either way).
 
+### Releases, rollback and backups
+
+`ARKS_REF` in `.env` names the application release the stack should run. To
+move to one:
+
+```bash
+# in .env:  ARKS_REF=v1.2.0
+make update          # fetch, check out ARKS_REF in the application checkout, then make install
+```
+
+A tag puts the checkout exactly on that release. A branch is fast-forwarded to
+its latest commit, and a blank `ARKS_REF` means the default branch. `make
+update` refuses when the checkout has uncommitted changes and never discards
+commits, so it is safe to run where the checkout is someone's working tree.
+
+Nothing else moves the checkout. `make up` and `make install` build whatever
+it is on; when that is not `ARKS_REF`, they print a note saying so and
+carry on.
+
+`make build` and `make install` label the image with what the application
+checkout is at (`git describe`: the release tag when it sits on one), and
+`make info` prints it as *Image revision*. The image a build replaces is kept
+as `arkservice-web:prev`, one generation only.
+
+```bash
+make rollback        # swap back to arkservice-web:prev and restart on it
+make rollback        # again: return to the newer image
+```
+
+Only the code goes back. `web` runs `migrate` on every start and that never
+un-applies a migration, so the database keeps the newer schema; check the
+release notes before rolling back across one.
+
+```bash
+make backup-media                      # ./backups/media-<date>-<time>.tgz, mode 600
+make backup-media BACKUP_DIR=/backup   # somewhere else
+docker compose exec -T web tar xzf - -C /data/media < backups/media-….tgz   # restore
+```
+
+The media volume holds the result files of bulk-bind jobs. Everything else
+that matters is in the database, which needs its own backups, and in `.env`.
+
 ### Disk housekeeping
 
 Every `make build` and `make install` ends by deleting the images earlier
@@ -154,7 +199,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 |---|---|---|
 | `ARKS_SRC` | filled in on first run | Path to the application checkout: `../arks-service` if one is there, otherwise `./src/arks-service` |
 | `ARKS_REPO` | empty | Where to clone the application from when `ARKS_SRC` has nothing in it. Empty means the same host and organisation this repository was cloned from |
-| `ARKS_REF` | empty | Branch or tag to clone. Empty means the default branch |
+| `ARKS_REF` | empty | The release to run: a tag, a branch, or empty for the default branch. Checked out on the first clone and by `make update`; see [Releases, rollback and backups](#releases-rollback-and-backups) |
 | `ARKS_PORT` | `8000` | Host port the stack listens on |
 | `DJANGO_SECRET_KEY` | generated | Session and CSRF signing key |
 | `DJANGO_DEBUG` | `false` | Leave it false |
@@ -168,6 +213,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `MYSQL_PASSWORD` | `ark` | That account's password. The MySQL container also uses it as the root password unless `MYSQL_ROOT_PASSWORD` is set |
 | `MYSQL_HOST` | empty | External server only, and required there: the MySQL endpoint |
 | `MYSQL_PORT` | `3306` | External server only |
+| `MYSQL_URL_OPTIONS` | empty | External server only: appended to the database URL as written. `?ssl_mode=REQUIRED` encrypts the connection to MySQL; without it the session is cleartext |
 | `BROKER_IMAGE` | commented out | The broker container's image. Commented out means Valkey; `redis:7-alpine` runs Redis |
 | `BROKER_PASSWORD` | generated | What clients authenticate with. The broker container enforces it; with an external broker it is that server's password. A deliberately blank line turns authentication off |
 | `BROKER_HOST` | empty | External broker only, and required there: the Valkey or Redis endpoint |
@@ -177,7 +223,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `BROKER_SCHEME`, `BROKER_URL_OPTIONS` | `redis`, empty | External broker only. For TLS: `rediss` and `?ssl_cert_reqs=required` |
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
-| `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
+| `DJANGO_SUPERUSER_PASSWORD` | generated | Only used to create the account, and never printed. Generated when `.env` has no such line; a blank line stays blank. In production, change the account's password after the first sign-in (`make manage ARGS="changepassword <name>"`), then blank the line |
 | `MINT_MAX_PER_REQUEST` | `10000` | Largest single mint. `0` removes the cap. Takes effect on the next `make up` |
 | `FALLBACK_DIR` | empty | A directory on this host holding operator-written `index.html`, `403.html`, `404.html`, `500.html` and their assets, mounted read-only into `web`. Empty means the built-in landing page and plain error pages. See [Fallback pages](#fallback-pages) |
 
@@ -190,6 +236,7 @@ so comment a line out rather than blanking it.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `ARKS_BIND_ADDRESS` | none | Only with `docker-compose.remote-proxy.yml`, which requires it: this host's private address, where `web` is published for a proxy on another machine. See [Behind a proxy on another machine](#behind-a-proxy-on-another-machine) |
 | `TRUST_FORWARDED_FOR` | `false`; `true` with `docker-compose.proxy.yml` | Take the client address from `X-Forwarded-For` (the entry the proxy appended) for the login throttle. Only safe when nothing but the proxy can reach the port, which is what the proxy override arranges |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Comma-separated `https://` origins allowed to post forms. Only needed when a form is posted from a different hostname than the one that served it |
 | `SECURE_HSTS_SECONDS` | `0` | HSTS lifetime. Leave 0 until TLS is known good on the hostname, then raise it |
@@ -207,7 +254,7 @@ so comment a line out rather than blanking it.
 | `COLLECTION_STATS_SECONDS` | `300` | How often the stored collection counts shown on staff pages are refreshed |
 | `SORT_SUBQUERY_MAX_ROWS` | `50000` | The most ARKs a staff list may hold and still offer the Redirects and Elements sorts |
 | `EXPORT_SYNC_MAX_ROWS` | `100000` | The largest export the staff interface serves itself; above it, it shows the equivalent `export_arks` command |
-| `WEB_MEM_LIMIT`, `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT`, `BROKER_MEM_LIMIT` | `1g`, `2g`, `256m`, `256m` | Memory ceiling per container. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
+| `WEB_MEM_LIMIT`, `WORKER_MEM_LIMIT`, `SCHEDULER_MEM_LIMIT`, `BROKER_MEM_LIMIT` | `1g`, `2g`, `384m`, `256m` | Memory ceiling per container. See [Processes, restarts, logs and memory](#processes-restarts-logs-and-memory) |
 | `BROKER_MAXMEMORY` | `200mb` | Valkey/Redis `--maxmemory` for the broker container. Keep it below `BROKER_MEM_LIMIT`: with `noeviction` a full broker refuses writes rather than being killed |
 
 `.env` is read by Compose and by the Makefile, which parse it slightly
@@ -529,6 +576,69 @@ verifies. Docker-side planning for a staging VM is in `DOCKER-DEPLOY.md`, a
 working note in the surrounding `arks-redesign` workspace, not a file of this
 repository.
 
+## Behind a proxy on another machine
+
+When TLS is terminated by a proxy on a different server (nginx on a gateway,
+say), `docker-compose.proxy.yml` does not fit: it publishes `web` on
+loopback, which only a proxy on this host can reach. Use
+`docker-compose.remote-proxy.yml` in its place, last in `COMPOSE_FILE`, never
+together with it:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.remote-proxy.yml
+ARKS_BIND_ADDRESS=10.0.0.12
+ARKS_EXTRA_HOSTS=ark.digital.utsc.utoronto.ca
+```
+
+What the override changes:
+
+- **`web` publishes its port on `ARKS_BIND_ADDRESS` only**, the address of
+  this host's private interface. It has no default: without it Compose stops
+  with a message instead of publishing gunicorn on every interface.
+- **The session and CSRF cookies are marked Secure**, as with the other proxy
+  file.
+- **`TRUST_FORWARDED_FOR` stays `false`** until you set it, because here the
+  port is on a network and the binding alone does not say who can reach it.
+
+Three things the file cannot do for you, in this order:
+
+1. **Firewall the port to the proxy.** Docker's published ports bypass the
+   host firewall (`ufw` included); the `DOCKER-USER` chain is the place Docker
+   leaves alone:
+
+   ```sh
+   iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8000 \
+            --ctdir ORIGINAL ! -s <proxy address> -j DROP
+   ```
+
+   Make it persistent (`iptables-persistent` or the distribution's
+   equivalent) and check from a third machine that the port does not answer.
+   Without this rule anything on that network can send
+   `X-Forwarded-Proto: https`, which the application believes whenever
+   `DJANGO_DEBUG` is false.
+2. **Have the proxy set the forwarded headers, not pass them on.** For nginx:
+
+   ```nginx
+   proxy_set_header Host              $host;
+   proxy_set_header X-Forwarded-Proto https;
+   proxy_set_header X-Forwarded-For   $remote_addr;
+   proxy_set_header X-Real-IP         $remote_addr;
+   proxy_pass       http://10.0.0.12:8000;
+   ```
+
+   `proxy_pass` without a path, so the request URI reaches gunicorn as it was
+   sent; a body limit of at least `BULK_BIND_MAX_BYTES` on the bulk-bind
+   upload; and a keep-alive to the stack shorter than gunicorn's 5 s.
+3. **Then set `TRUST_FORWARDED_FOR=true`** in `.env` and `make up`, so the
+   login throttle counts per client instead of treating every visitor as the
+   proxy. The application takes the last entry of `X-Forwarded-For`, so the
+   hop nearest the stack must be the one writing the real client address; if
+   something sits between the proxy and the stack that does not, leave it
+   `false` for the paths that go through it.
+
+Check the inflection the same way as behind Apache:
+`curl -sI 'https://<host>/ark:/61220/<id>?' | head -1` must be `200`, not `302`.
+
 ## Fallback pages
 
 The public sees three pages that are not ARKs: the landing page at `/`, the
@@ -575,6 +685,18 @@ empty `fallback/` directory is mounted and the application ignores it.
 - **Every service restarts on its own** (`restart: unless-stopped`) after a
   crash or a reboot of the host, unless it was stopped on purpose.
   `make down` removes the containers, so development is unaffected.
+- **The application containers hold no privileges**: `web`, `worker` and
+  `scheduler` run as an unprivileged user with every Linux capability dropped,
+  `no-new-privileges` set and a ceiling on the number of processes.
+- **The access log names the client**: behind a proxy the peer is always the
+  proxy, so each line of `web`'s log also carries `fwd=` (`X-Forwarded-For`)
+  and `real=` (`X-Real-IP`). They are as trustworthy as the port is closed to
+  everything but the proxy.
+- **`worker` and `scheduler` have health checks**: each asks its own Celery
+  node to answer through the broker, so a process that is up but no longer
+  consuming shows as `unhealthy` in `make ps`, and `make up` waits for both.
+  Docker does not restart an unhealthy container; `docker compose restart
+  worker` does.
 - **Logs are capped**: Docker's `json-file` driver, five files of 10 MB per
   container. `make logs` reads them as before.
 - **Memory is capped per container**: `web` 1 GB, `worker` 2 GB,

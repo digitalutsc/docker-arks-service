@@ -87,6 +87,7 @@ docker-arks-service/
 ├── docker-compose.external-db.yml        override (production): an existing MySQL server, no db container
 ├── docker-compose.external-broker.yml    override (production): an existing Valkey/Redis server, no broker container
 ├── docker-compose.proxy.yml              override: behind Apache/TLS on the same host (loopback port, Secure cookies)
+├── docker-compose.remote-proxy.yml       override: behind a TLS proxy on another machine (ARKS_BIND_ADDRESS port, Secure cookies)
 ├── .env.example                          every setting with its comment; `make up` copies it to .env
 ├── .env                                  THIS MACHINE's settings and secrets (gitignored, mode 600)
 ├── .dockerignore                         keeps .env, exports, CSVs and src/ out of the main build context
@@ -161,11 +162,12 @@ The one server in `broker` holds **two logical databases**: `0` is the Celery qu
 | | `web` | `worker` | `scheduler` |
 |---|---|---|---|
 | Image | `arkservice-web:local`, **built here** (`build.context: .`, `additional_contexts.src: ${ARKS_SRC:-../arks-service}`, `additional_contexts.plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}`) | `arkservice-web:local` (no build section; reuses web's) | `arkservice-web:local` |
-| Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
+| Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --access-logformat '…'"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
 | depends_on | `db: service_healthy`, `broker: service_healthy` | db, broker, **web** healthy | db, broker, **web** healthy |
-| Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | none | none |
+| Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | `celery -A arkservice inspect ping -d celery@$HOSTNAME --timeout 10`: every 60 s (every 5 s during the 60 s start period), 20 s timeout, 3 retries | the same; it runs one task at a time, so it cannot answer during a task |
 | restart | `unless-stopped` | `unless-stopped` | `unless-stopped` |
-| mem_limit | `${WEB_MEM_LIMIT:-1g}` | `${WORKER_MEM_LIMIT:-2g}` | `${SCHEDULER_MEM_LIMIT:-256m}` |
+| mem_limit | `${WEB_MEM_LIMIT:-1g}` | `${WORKER_MEM_LIMIT:-2g}` | `${SCHEDULER_MEM_LIMIT:-384m}` (the scheduler, about 120 MB, plus its health check, about 70 MB) |
+| Privileges | `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit: 512` | the same | the same, `pids_limit: 256` |
 | stop_grace_period | 35 s (above gunicorn's 30 s graceful timeout) | 120 s (let a running bulk bind finish) | 30 s |
 | Volumes | `media:/data/media` | `media:/data/media` | `media:/data/media` |
 | Ports | `${ARKS_PORT:-8000}:8000` | none | none |
@@ -198,7 +200,7 @@ sequenceDiagram
   M->>E: ./scripts/ensure-env.sh
   E->>E: cp .env.example .env (if absent), then chmod 600
   E->>E: ARKS_SRC blank? → ../arks-service if it has manage.py, else ./src/arks-service
-  E->>E: fill DJANGO_SECRET_KEY, DJANGO_SUPERUSER_PASSWORD if blank
+  E->>E: fill DJANGO_SECRET_KEY if blank, add DJANGO_SUPERUSER_PASSWORD if absent
   E->>E: append BROKER_PASSWORD only if no such line exists
   M->>M: check: docker present, compose v2, version ≥ 2.24.4 if COMPOSE_FILES names mysql/external/proxy
   M->>S: ./scripts/ensure-src.sh
@@ -216,7 +218,7 @@ sequenceDiagram
   C->>WK: start worker (-Q celery) and scheduler (-Q periodic --beat)
   C-->>M: --wait returns (or fails after ~3 min → printed help, exit 1, containers keep running)
   M->>A: docker compose exec -T -e DJANGO_SUPERUSER_* web python manage.py shell --no-imports < scripts/bootstrap_admin.py
-  A->>A: user absent → create_superuser, print password, else "left unchanged"
+  A->>A: user absent → create_superuser (password not printed), else "left unchanged"
   M->>U: make info: addresses, "Sign in as admin", where the password lives
 ```
 
@@ -299,12 +301,15 @@ Compose interpolates every `${VAR:?message}` for *every* command, `down` include
 | `clean` | `confirm-external` | `$(TEARDOWN_ENV) $(COMPOSE) down --volumes --remove-orphans`; `docker image rm -f $(IMAGE)` | Removes containers, the volumes of whichever services the current `COMPOSE_FILE` declares, and the image. **Keeps `.env`** ("it holds this machine's secret key and admin password"). Never touches an external database or broker |
 | `rebuild` | `confirm-external clean install` | — | Blow away and start from scratch |
 | `prune` | — | `docker image prune -f --filter label=$(LABEL)`; `docker builder prune -f --filter until=24h`; list other `arkservice-*` tags | Build-cache prune is **not** label-scoped (cache carries no labels), so it is Docker-wide for cache older than a day. Other tags are listed, never removed |
+| `update` | `env`, `check` | `./scripts/update-src.sh`, then `make install` | Fetches, then puts the checkout on `ARKS_REF`: a tag (detached, exactly on it), a branch (fast-forward to `origin`'s), a commit, or the default branch when blank. Refuses on uncommitted changes to tracked files, an unknown ref, or a branch that cannot be fast-forwarded; never discards commits. `scripts/ensure-src.sh` (run by `up` and `build`) only prints a note when the checkout is not at `ARKS_REF` |
+| `rollback` | `check` | swap the `arkservice-web:local` and `arkservice-web:prev` tags; `$(COMPOSE) up -d --wait --remove-orphans` | `build` keeps the image it replaced as `:prev`, tagged only after a successful build that produced a different image. Migrations are not reversed. A second `rollback` undoes the first |
+| `backup-media` | — | `$(COMPOSE) exec -T web tar czf - -C /data/media .` into `$(BACKUP_DIR)/media-<date>-<time>.tgz` (default `backups/`, gitignored), written as `.part` and renamed | Needs the stack up. Restore with `tar xzf - -C /data/media` through the same `exec -T` |
 
 ### Guard targets
 
 | Target | What it checks | Message |
 |---|---|---|
-| `check` | `docker` on PATH; `docker compose version` works; if `COMPOSE_FILES` matches `*mysql*\|*external*\|*proxy*`, Compose version ≥ 2.24.4 via an `awk` comparison on `version --short` | "docker-compose.mysql.yml, docker-compose.proxy.yml and the external-db/external-broker files need Docker Compose 2.24.4 or later (found $v)." |
+| `check` | `docker` on PATH; `docker compose version` works; Compose version ≥ 2.24.4 via an `awk` comparison on `version --short` (the overrides use `!override`/`!reset`, the health checks `start_interval`) | "This stack needs Docker Compose 2.24.4 or later (found $v)." |
 | `confirm-external` | If `COMPOSE_FILES` contains `external`: `CONFIRM=yes` → pass; otherwise prompt `Type yes to go ahead:` and abort with "Nothing done." on anything else | "COMPOSE_FILE uses an external database or broker: this looks like production. This stops the service and removes the stack's containers, volumes and image. The external servers themselves are not touched." |
 
 The reasoning in the Makefile comment: `clean` never touches the external server, but a machine configured that way *is* production, where taking the stack apart is an outage and drops the broker container's queued jobs. A development stack names no external file and is never asked.
@@ -313,10 +318,10 @@ The reasoning in the Makefile comment: `clean` never touches the external server
 
 | Target | Runs | Notes |
 |---|---|---|
-| `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC`, `DJANGO_SECRET_KEY`, `DJANGO_SUPERUSER_PASSWORD` when blank; adds `BROKER_PASSWORD` only when the line is absent |
+| `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC` and `DJANGO_SECRET_KEY` when blank; adds `DJANGO_SUPERUSER_PASSWORD` and `BROKER_PASSWORD` only when the line is absent, so a blank line stays blank |
 | `src` | `env`, then `./scripts/ensure-src.sh` | Clones the application into `ARKS_SRC` if nothing is there |
 | `admin` | `$(COMPOSE) exec -T -e DJANGO_SUPERUSER_USERNAME=… -e …EMAIL=… -e …PASSWORD=… web python manage.py shell --no-imports < scripts/bootstrap_admin.py` | Credentials are passed on that one `exec`, never put in the service definition or the image |
-| `info` | prints `Public resolver http://localhost:$port/`, `Staff interface http://localhost:$port/admin/`, `Sign in as $user` and where the password is | `$port` defaults to 8000 if `ARKS_PORT` is blank |
+| `info` | prints the resolver and staff addresses (`http://localhost:$port/` directly; plus `http://<host>:$port/` for each name in `ARKS_EXTRA_HOSTS`; behind a proxy file, `https://<host>/` for each name and where `web` listens), `Sign in as $user`, the image's revision label and what to do about the password | `$port` defaults to 8000 if `ARKS_PORT` is blank |
 
 ### Everyday targets
 
@@ -381,7 +386,7 @@ Two parsers read `.env`: Compose's dotenv and the Makefile's `sed`. They agree o
 | `ARKS_EXTRA_HOSTS` | empty | Appended to `DJANGO_ALLOWED_HOSTS` after `localhost,127.0.0.1` |
 | `COMPOSE_FILE` | commented out | The override list (section 8) |
 | `BROKER_IMAGE` | `valkey/valkey:8-alpine` | `redis:7-alpine` for Redis |
-| `WEB_MEM_LIMIT` / `WORKER_MEM_LIMIT` / `SCHEDULER_MEM_LIMIT` / `BROKER_MEM_LIMIT` | `1g` / `2g` / `256m` / `256m` | Docker `mem_limit` per container |
+| `WEB_MEM_LIMIT` / `WORKER_MEM_LIMIT` / `SCHEDULER_MEM_LIMIT` / `BROKER_MEM_LIMIT` | `1g` / `2g` / `384m` / `256m` | Docker `mem_limit` per container |
 | `BROKER_MAXMEMORY` | `200mb` | Valkey/Redis `--maxmemory`; keep below `BROKER_MEM_LIMIT` |
 | `DJANGO_SUPERUSER_USERNAME` / `_EMAIL` / `_PASSWORD` | `admin` / `admin@example.org` / generated | Only used by `make admin` |
 
@@ -394,6 +399,7 @@ Two parsers read `.env`: Compose's dotenv and the Makefile's `sed`. They agree o
 | `MYSQL_ROOT_PASSWORD` | `${MYSQL_PASSWORD}` | MySQL container only |
 | `MYSQL_HOST` | **none** (`${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}`) | external-db only |
 | `MYSQL_PORT` | `3306` | external-db only |
+| `MYSQL_URL_OPTIONS` | empty | external-db only: appended to `DATABASE_URL` as written; `?ssl_mode=REQUIRED` for TLS to MySQL |
 
 **Broker**
 
@@ -554,7 +560,7 @@ services:
     profiles: ["local-db-disabled"]
   web:
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}${MYSQL_URL_OPTIONS:-}
     depends_on:
       db: !reset
   worker:    (same two keys)
@@ -602,6 +608,24 @@ services:
 - Cookies Secure, `TRUST_FORWARDED_FOR` flips its default to true (overridable from `.env`).
 - Must come **last** in `COMPOSE_FILE`, after the files that choose database and broker.
 
+### `docker-compose.remote-proxy.yml`
+
+```yaml
+services:
+  web:
+    ports: !override ["${ARKS_BIND_ADDRESS:?…}:${ARKS_PORT:-8000}:8000"]
+    environment:
+      SESSION_COOKIE_SECURE: "true"
+      CSRF_COOKIE_SECURE: "true"
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"
+  worker:    (the three environment keys)
+  scheduler: (the three environment keys)
+```
+
+- For a proxy on **another** machine; the alternative to `docker-compose.proxy.yml`, never combined with it (both `!override` the same `ports`, so the later file would silently win).
+- `ARKS_BIND_ADDRESS` is required, so a missing value stops Compose rather than publishing on every interface. `TEARDOWN_ENV` and CI supply a placeholder.
+- `TRUST_FORWARDED_FOR` keeps its false default: the port is on a network, and only a `DOCKER-USER` rule limiting it to the proxy makes the header trustworthy. The file's header and the README give the rule.
+
 ### Valid combinations
 
 | `COMPOSE_FILE` | Database | Broker | Port | Use |
@@ -613,8 +637,9 @@ services:
 | `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml` | existing MySQL | existing Valkey/Redis | all | what `ark-endpoints/` runs (no Apache locally) |
 | `…yml:docker-compose.mysql.yml:docker-compose.proxy.yml` | MySQL container | container | 127.0.0.1 | staging VM behind Apache |
 | `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.proxy.yml` | existing MySQL | existing Valkey/Redis | 127.0.0.1 | **full production** |
+| `…yml:docker-compose.external-db.yml:docker-compose.external-broker.yml:docker-compose.remote-proxy.yml` | existing MySQL | existing Valkey/Redis | `ARKS_BIND_ADDRESS` | production behind a proxy on another machine |
 
-Invalid: `mysql.yml` together with `external-db.yml` (both define `db`; the later one wins, but the intent is contradictory).
+Invalid: `proxy.yml` together with `remote-proxy.yml` (one or the other). Invalid: `mysql.yml` together with `external-db.yml` (both define `db`; the later one wins, but the intent is contradictory).
 
 ### Dev versus production topology
 
@@ -779,6 +804,7 @@ Planned but **not present**: `arks-service/deploy/apache-arkservice-docker.conf`
 | `--keep-alive 5` | Above Apache's `ttl=3`, so the proxy always closes an idle connection first |
 | `--max-requests 2000 --max-requests-jitter 200` | Each process is replaced after ~2000 requests, jittered so they do not all restart together; caps slow memory growth |
 | `--access-logfile -` | Access log to stdout (Docker's json-file). The bare systemd unit omits it because Apache already logs |
+| `--access-logformat` | `peer fwd=<X-Forwarded-For> real=<X-Real-IP> [time] "request" status bytes "referer" "agent"`. Behind a proxy the peer is always the proxy, so the two headers are what identify the client |
 
 `python manage.py migrate --no-input &&` runs first, every start.
 
@@ -950,10 +976,11 @@ docker compose cp web:/data/cutover-diff.csv .
 | Broker | Password-protected by default (`--requirepass`), generated 48-character secret; a blank line turns auth off and is only sensible on a machine nobody else reaches. The healthcheck does not trust `redis-cli`'s exit status |
 | `.env` | Created and kept at mode 600; gitignored; holds the secret key, admin password, broker password, database password. `make clean` keeps it deliberately |
 | Image | No data, no secrets, no `.env`, no `tests/`; `.dockerignore` keeps `.env`, `*.sql`, `*.csv`, `src/`, `.git` out of the main context; runs as uid 10001 with `nologin` |
-| Admin credentials | Passed to one `docker compose exec -e …` for `bootstrap_admin.py`; never in the service definition, never in the image; printed once on creation |
+| Admin credentials | Passed to one `docker compose exec -e …` for `bootstrap_admin.py`; never in the service definition, never in the image, never printed. `make info` says to change the password and blank the line in `.env`, which `ensure-env.sh` then leaves blank |
 | The legacy export | A secret (its `user` table holds reversibly encrypted staff passwords). `import-dump` copies it into `/data`, imports, and removes it in the same shell line, success or failure. `.gitignore` and `.dockerignore` both exclude `*.sql`/`*.sql.gz`. On a VM it arrives only over `scp` and is `shred -u`'d after import |
 | Production confirmations | `make clean`/`rebuild` prompt when `COMPOSE_FILE` names an external server; `make import-dump` refuses to write into an external database without `CONFIRM=yes`, dry run included |
 | Cookies and headers | Secure cookies and `TRUST_FORWARDED_FOR=true` only with the proxy override; `SECURE_HSTS_SECONDS` stays 0 until TLS is proven. The application adds CSP (`script-src 'self'; style-src 'self'`), Referrer-Policy and Permissions-Policy on every response |
+| Privileges | `web`, `worker` and `scheduler`: uid 10001, all capabilities dropped, `no-new-privileges`, `pids_limit`. `db` and `broker` keep their images' defaults, because they start as root and step down themselves |
 | Memory | Every application container and the broker have `mem_limit`; the broker's own `--maxmemory` sits below it so it refuses writes instead of being killed |
 
 ---

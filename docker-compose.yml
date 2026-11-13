@@ -35,6 +35,17 @@ x-logging: &logging
     max-size: 10m
     max-file: "5"
 
+# The three application containers run with no Linux capabilities and cannot
+# gain any: the image's user is unprivileged, gunicorn binds a high port, and
+# nothing in the application needs more. no-new-privileges stops a setuid
+# binary from undoing that. The process ceilings are well above what each
+# service starts (web: 3 workers of 8 threads; worker: 2 children) and only
+# stop a runaway from exhausting the host. The database and broker images
+# start as root and step down themselves, so they are left as published.
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
 services:
   db:
     image: postgres:16-alpine
@@ -112,8 +123,14 @@ services:
         src: ${ARKS_SRC:-../arks-service}
         # Optional plugin checkout (arks-cli); plugins-none/ installs nothing.
         plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}
+      # Recorded as a label on the image, so `make info` can say what is
+      # running. The Makefile fills it in from the application checkout.
+      args:
+        ARKS_REVISION: ${ARKS_REVISION:-unknown}
     restart: unless-stopped
     logging: *logging
+    <<: *hardening
+    pids_limit: 512
     mem_limit: ${WEB_MEM_LIMIT:-1g}
     # Threads rather than more processes: a /manifest fetch parks a worker on
     # I/O, and 3 sync workers meant three slow targets could stall the whole
@@ -122,9 +139,14 @@ services:
     # --keep-alive 5 sits above a proxy's pooled-connection ttl, so the proxy
     # always closes an idle connection first. This is the only place the
     # command is set: the image has no CMD of its own.
+    #
+    # The access log names the client three ways, because behind a proxy the
+    # peer (the first field) is always the proxy: fwd= is X-Forwarded-For and
+    # real= is X-Real-IP, each "-" when the header is absent. They are only as
+    # trustworthy as the port is closed to everything but the proxy.
     command: >
       sh -c "python manage.py migrate --no-input &&
-             exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"
+             exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --access-logformat '%(h)s fwd=%({x-forwarded-for}i)s real=%({x-real-ip}i)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"
     # Above gunicorn's 30 s graceful timeout, so in-flight requests finish
     # before Docker sends SIGKILL.
     stop_grace_period: 35s
@@ -219,11 +241,26 @@ services:
     image: arkservice-web:local
     restart: unless-stopped
     logging: *logging
+    <<: *hardening
+    pids_limit: 512
     mem_limit: ${WORKER_MEM_LIMIT:-2g}
     command: celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info
     stop_grace_period: 120s
     environment: *env
     volumes: [media:/data/media]
+    # Asks this container's own Celery node to answer through the broker, so
+    # a worker that is running but no longer consuming shows as unhealthy in
+    # `make ps` instead of looking fine. Docker does not restart an unhealthy
+    # container; this is for the operator and for `make up`, which waits for
+    # it. The first checks come every 5 s so a start is not held up; after
+    # that, once a minute, because each one starts a Python process.
+    healthcheck: &celery-health
+      test: ["CMD-SHELL", "celery -A arkservice inspect ping -d celery@$$HOSTNAME --timeout 10 >/dev/null 2>&1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     depends_on:
       db: {condition: service_healthy}
       broker: {condition: service_healthy}
@@ -239,11 +276,18 @@ services:
     image: arkservice-web:local
     restart: unless-stopped
     logging: *logging
-    mem_limit: ${SCHEDULER_MEM_LIMIT:-256m}
+    <<: *hardening
+    pids_limit: 256
+    # Room for the scheduler (about 120 MB) and its health check (about 70 MB).
+    mem_limit: ${SCHEDULER_MEM_LIMIT:-384m}
     command: celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info
     stop_grace_period: 30s
     environment: *env
     volumes: [media:/data/media]
+    # The same check as the worker. This node runs one task at a time in its
+    # own process, so it cannot answer while a task is running: three misses
+    # in a row (three minutes) are needed before it is called unhealthy.
+    healthcheck: *celery-health
     depends_on:
       db: {condition: service_healthy}
       broker: {condition: service_healthy}
