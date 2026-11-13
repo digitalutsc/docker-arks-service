@@ -225,20 +225,26 @@ admin: ## Create the administrator account from .env, or leave it alone
 info: ## Print the stack's address and administrator login
 	@port="$(call ENVGET,ARKS_PORT)"; port="$${port:-8000}"; \
 	user="$(call ENVGET,DJANGO_SUPERUSER_USERNAME)"; \
-	hosts="$(call ENVGET,ARKS_EXTRA_HOSTS)"; public="$${hosts%%,*}"; \
+	hosts=$$(echo "$(call ENVGET,ARKS_EXTRA_HOSTS)" | tr ',' ' '); \
 	listen=; \
 	case "$(COMPOSE_FILES)" in \
 	  *remote-proxy*) listen="$(call ENVGET,ARKS_BIND_ADDRESS):$$port" ;; \
 	  *proxy*) listen="127.0.0.1:$$port" ;; \
 	esac; \
-	echo; \
+	lines() { label="$$1"; path="$$2"; shift 2; \
+	  for base in "$$@"; do echo "  $$label $$base$$path"; label="                 "; done; }; \
+	bases=; \
 	if [ -z "$$listen" ]; then \
-	  echo "  Public resolver   http://localhost:$$port/"; \
-	  echo "  Staff interface   http://localhost:$$port/admin/"; \
-	elif [ -n "$$public" ]; then \
-	  echo "  Public resolver   https://$$public/"; \
-	  echo "  Staff interface   https://$$public/admin/"; \
-	  echo "  Through the proxy; web itself listens on $$listen."; \
+	  bases="http://localhost:$$port"; \
+	  for h in $$hosts; do bases="$$bases http://$$h:$$port"; done; \
+	else \
+	  for h in $$hosts; do bases="$$bases https://$$h"; done; \
+	fi; \
+	echo; \
+	if [ -n "$$bases" ]; then \
+	  lines "Public resolver  " "/" $$bases; \
+	  lines "Staff interface  " "/admin/" $$bases; \
+	  if [ -n "$$listen" ]; then echo "  Through the proxy; web itself listens on $$listen."; fi; \
 	else \
 	  echo "  web listens on $$listen, for the proxy. Set ARKS_EXTRA_HOSTS in .env to"; \
 	  echo "  the public hostname: Django refuses any other."; \

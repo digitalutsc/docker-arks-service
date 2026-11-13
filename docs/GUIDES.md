@@ -321,7 +321,7 @@ The reasoning in the Makefile comment: `clean` never touches the external server
 | `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC` and `DJANGO_SECRET_KEY` when blank; adds `DJANGO_SUPERUSER_PASSWORD` and `BROKER_PASSWORD` only when the line is absent, so a blank line stays blank |
 | `src` | `env`, then `./scripts/ensure-src.sh` | Clones the application into `ARKS_SRC` if nothing is there |
 | `admin` | `$(COMPOSE) exec -T -e DJANGO_SUPERUSER_USERNAME=… -e …EMAIL=… -e …PASSWORD=… web python manage.py shell --no-imports < scripts/bootstrap_admin.py` | Credentials are passed on that one `exec`, never put in the service definition or the image |
-| `info` | prints the resolver and staff addresses (`http://localhost:$port/` directly; `https://<first ARKS_EXTRA_HOSTS>/` and where `web` listens when `COMPOSE_FILES` names a proxy file), `Sign in as $user`, the image's revision label and what to do about the password | `$port` defaults to 8000 if `ARKS_PORT` is blank |
+| `info` | prints the resolver and staff addresses (`http://localhost:$port/` directly; plus `http://<host>:$port/` for each name in `ARKS_EXTRA_HOSTS`; behind a proxy file, `https://<host>/` for each name and where `web` listens), `Sign in as $user`, the image's revision label and what to do about the password | `$port` defaults to 8000 if `ARKS_PORT` is blank |
 
 ### Everyday targets
 
