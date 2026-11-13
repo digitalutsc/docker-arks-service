@@ -168,6 +168,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `MYSQL_PASSWORD` | `ark` | That account's password. The MySQL container also uses it as the root password unless `MYSQL_ROOT_PASSWORD` is set |
 | `MYSQL_HOST` | empty | External server only, and required there: the MySQL endpoint |
 | `MYSQL_PORT` | `3306` | External server only |
+| `MYSQL_URL_OPTIONS` | empty | External server only: appended to the database URL as written. `?ssl_mode=REQUIRED` encrypts the connection to MySQL; without it the session is cleartext |
 | `BROKER_IMAGE` | commented out | The broker container's image. Commented out means Valkey; `redis:7-alpine` runs Redis |
 | `BROKER_PASSWORD` | generated | What clients authenticate with. The broker container enforces it; with an external broker it is that server's password. A deliberately blank line turns authentication off |
 | `BROKER_HOST` | empty | External broker only, and required there: the Valkey or Redis endpoint |
@@ -177,7 +178,7 @@ Everything is in `.env`, which `make up` creates and never overwrites.
 | `BROKER_SCHEME`, `BROKER_URL_OPTIONS` | `redis`, empty | External broker only. For TLS: `rediss` and `?ssl_cert_reqs=required` |
 | `DJANGO_SUPERUSER_USERNAME` | `admin` | The account `make up` creates |
 | `DJANGO_SUPERUSER_EMAIL` | `admin@example.org` | |
-| `DJANGO_SUPERUSER_PASSWORD` | generated | Printed on the run that creates the account |
+| `DJANGO_SUPERUSER_PASSWORD` | generated | Only used to create the account, and never printed. Generated when `.env` has no such line; a blank line stays blank. In production, change the account's password after the first sign-in (`make manage ARGS="changepassword <name>"`), then blank the line |
 | `MINT_MAX_PER_REQUEST` | `10000` | Largest single mint. `0` removes the cap. Takes effect on the next `make up` |
 | `FALLBACK_DIR` | empty | A directory on this host holding operator-written `index.html`, `403.html`, `404.html`, `500.html` and their assets, mounted read-only into `web`. Empty means the built-in landing page and plain error pages. See [Fallback pages](#fallback-pages) |
 
@@ -576,6 +577,7 @@ Three things the file cannot do for you, in this order:
    proxy_set_header Host              $host;
    proxy_set_header X-Forwarded-Proto https;
    proxy_set_header X-Forwarded-For   $remote_addr;
+   proxy_set_header X-Real-IP         $remote_addr;
    proxy_pass       http://10.0.0.12:8000;
    ```
 
@@ -638,6 +640,13 @@ empty `fallback/` directory is mounted and the application ignores it.
 - **Every service restarts on its own** (`restart: unless-stopped`) after a
   crash or a reboot of the host, unless it was stopped on purpose.
   `make down` removes the containers, so development is unaffected.
+- **The application containers hold no privileges**: `web`, `worker` and
+  `scheduler` run as an unprivileged user with every Linux capability dropped,
+  `no-new-privileges` set and a ceiling on the number of processes.
+- **The access log names the client**: behind a proxy the peer is always the
+  proxy, so each line of `web`'s log also carries `fwd=` (`X-Forwarded-For`)
+  and `real=` (`X-Real-IP`). They are as trustworthy as the port is closed to
+  everything but the proxy.
 - **Logs are capped**: Docker's `json-file` driver, five files of 10 MB per
   container. `make logs` reads them as before.
 - **Memory is capped per container**: `web` 1 GB, `worker` 2 GB,

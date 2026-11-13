@@ -35,6 +35,17 @@ x-logging: &logging
     max-size: 10m
     max-file: "5"
 
+# The three application containers run with no Linux capabilities and cannot
+# gain any: the image's user is unprivileged, gunicorn binds a high port, and
+# nothing in the application needs more. no-new-privileges stops a setuid
+# binary from undoing that. The process ceilings are well above what each
+# service starts (web: 3 workers of 8 threads; worker: 2 children) and only
+# stop a runaway from exhausting the host. The database and broker images
+# start as root and step down themselves, so they are left as published.
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
 services:
   db:
     image: postgres:16-alpine
@@ -114,6 +125,8 @@ services:
         plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}
     restart: unless-stopped
     logging: *logging
+    <<: *hardening
+    pids_limit: 512
     mem_limit: ${WEB_MEM_LIMIT:-1g}
     # Threads rather than more processes: a /manifest fetch parks a worker on
     # I/O, and 3 sync workers meant three slow targets could stall the whole
@@ -122,9 +135,14 @@ services:
     # --keep-alive 5 sits above a proxy's pooled-connection ttl, so the proxy
     # always closes an idle connection first. This is the only place the
     # command is set: the image has no CMD of its own.
+    #
+    # The access log names the client three ways, because behind a proxy the
+    # peer (the first field) is always the proxy: fwd= is X-Forwarded-For and
+    # real= is X-Real-IP, each "-" when the header is absent. They are only as
+    # trustworthy as the port is closed to everything but the proxy.
     command: >
       sh -c "python manage.py migrate --no-input &&
-             exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"
+             exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --access-logformat '%(h)s fwd=%({x-forwarded-for}i)s real=%({x-real-ip}i)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"
     # Above gunicorn's 30 s graceful timeout, so in-flight requests finish
     # before Docker sends SIGKILL.
     stop_grace_period: 35s
@@ -219,6 +237,8 @@ services:
     image: arkservice-web:local
     restart: unless-stopped
     logging: *logging
+    <<: *hardening
+    pids_limit: 512
     mem_limit: ${WORKER_MEM_LIMIT:-2g}
     command: celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info
     stop_grace_period: 120s
@@ -239,6 +259,8 @@ services:
     image: arkservice-web:local
     restart: unless-stopped
     logging: *logging
+    <<: *hardening
+    pids_limit: 256
     mem_limit: ${SCHEDULER_MEM_LIMIT:-256m}
     command: celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info
     stop_grace_period: 30s

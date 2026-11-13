@@ -172,8 +172,14 @@ info: ## Print the stack's address and administrator login
 	echo "  Staff interface   http://localhost:$$port/admin/"; \
 	echo "  Sign in as        $$user"; \
 	echo; \
-	echo "  The generated password is DJANGO_SUPERUSER_PASSWORD in .env, which"; \
-	echo "  make clean keeps. An account that already existed keeps its own."; \
+	if [ -n "$(call ENVGET,DJANGO_SUPERUSER_PASSWORD)" ]; then \
+	  echo "  The initial password is DJANGO_SUPERUSER_PASSWORD in .env, which make clean"; \
+	  echo "  keeps. An account that already existed keeps its own. In production, change"; \
+	  echo "  it after the first sign-in and then blank that line:"; \
+	  echo "    make manage ARGS=\"changepassword $$user\""; \
+	else \
+	  echo "  DJANGO_SUPERUSER_PASSWORD is blank in .env: the account has its own password."; \
+	fi; \
 	echo
 
 logs: ## Follow the logs of every service

@@ -162,11 +162,12 @@ The one server in `broker` holds **two logical databases**: `0` is the Celery qu
 | | `web` | `worker` | `scheduler` |
 |---|---|---|---|
 | Image | `arkservice-web:local`, **built here** (`build.context: .`, `additional_contexts.src: ${ARKS_SRC:-../arks-service}`, `additional_contexts.plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}`) | `arkservice-web:local` (no build section; reuses web's) | `arkservice-web:local` |
-| Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile -"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
+| Command | `sh -c "python manage.py migrate --no-input && exec gunicorn arkservice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 8 --worker-class gthread --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --access-logformat '…'"` | `celery -A arkservice worker -Q celery --concurrency 2 --max-tasks-per-child 20 --max-memory-per-child 1000000 --loglevel=info` | `celery -A arkservice worker -Q periodic --pool solo --concurrency 1 --beat --loglevel=info` |
 | depends_on | `db: service_healthy`, `broker: service_healthy` | db, broker, **web** healthy | db, broker, **web** healthy |
 | Healthcheck | `curl -fsS http://localhost:8000/healthz`, 15 s interval, 5 s timeout, 10 retries, 30 s start period | none | none |
 | restart | `unless-stopped` | `unless-stopped` | `unless-stopped` |
 | mem_limit | `${WEB_MEM_LIMIT:-1g}` | `${WORKER_MEM_LIMIT:-2g}` | `${SCHEDULER_MEM_LIMIT:-256m}` |
+| Privileges | `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit: 512` | the same | the same, `pids_limit: 256` |
 | stop_grace_period | 35 s (above gunicorn's 30 s graceful timeout) | 120 s (let a running bulk bind finish) | 30 s |
 | Volumes | `media:/data/media` | `media:/data/media` | `media:/data/media` |
 | Ports | `${ARKS_PORT:-8000}:8000` | none | none |
@@ -199,7 +200,7 @@ sequenceDiagram
   M->>E: ./scripts/ensure-env.sh
   E->>E: cp .env.example .env (if absent), then chmod 600
   E->>E: ARKS_SRC blank? → ../arks-service if it has manage.py, else ./src/arks-service
-  E->>E: fill DJANGO_SECRET_KEY, DJANGO_SUPERUSER_PASSWORD if blank
+  E->>E: fill DJANGO_SECRET_KEY if blank, add DJANGO_SUPERUSER_PASSWORD if absent
   E->>E: append BROKER_PASSWORD only if no such line exists
   M->>M: check: docker present, compose v2, version ≥ 2.24.4 if COMPOSE_FILES names mysql/external/proxy
   M->>S: ./scripts/ensure-src.sh
@@ -217,7 +218,7 @@ sequenceDiagram
   C->>WK: start worker (-Q celery) and scheduler (-Q periodic --beat)
   C-->>M: --wait returns (or fails after ~3 min → printed help, exit 1, containers keep running)
   M->>A: docker compose exec -T -e DJANGO_SUPERUSER_* web python manage.py shell --no-imports < scripts/bootstrap_admin.py
-  A->>A: user absent → create_superuser, print password, else "left unchanged"
+  A->>A: user absent → create_superuser (password not printed), else "left unchanged"
   M->>U: make info: addresses, "Sign in as admin", where the password lives
 ```
 
@@ -314,7 +315,7 @@ The reasoning in the Makefile comment: `clean` never touches the external server
 
 | Target | Runs | Notes |
 |---|---|---|
-| `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC`, `DJANGO_SECRET_KEY`, `DJANGO_SUPERUSER_PASSWORD` when blank; adds `BROKER_PASSWORD` only when the line is absent |
+| `env` | `./scripts/ensure-env.sh` | Creates `.env` if absent; fills `ARKS_SRC` and `DJANGO_SECRET_KEY` when blank; adds `DJANGO_SUPERUSER_PASSWORD` and `BROKER_PASSWORD` only when the line is absent, so a blank line stays blank |
 | `src` | `env`, then `./scripts/ensure-src.sh` | Clones the application into `ARKS_SRC` if nothing is there |
 | `admin` | `$(COMPOSE) exec -T -e DJANGO_SUPERUSER_USERNAME=… -e …EMAIL=… -e …PASSWORD=… web python manage.py shell --no-imports < scripts/bootstrap_admin.py` | Credentials are passed on that one `exec`, never put in the service definition or the image |
 | `info` | prints `Public resolver http://localhost:$port/`, `Staff interface http://localhost:$port/admin/`, `Sign in as $user` and where the password is | `$port` defaults to 8000 if `ARKS_PORT` is blank |
@@ -395,6 +396,7 @@ Two parsers read `.env`: Compose's dotenv and the Makefile's `sed`. They agree o
 | `MYSQL_ROOT_PASSWORD` | `${MYSQL_PASSWORD}` | MySQL container only |
 | `MYSQL_HOST` | **none** (`${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}`) | external-db only |
 | `MYSQL_PORT` | `3306` | external-db only |
+| `MYSQL_URL_OPTIONS` | empty | external-db only: appended to `DATABASE_URL` as written; `?ssl_mode=REQUIRED` for TLS to MySQL |
 
 **Broker**
 
@@ -555,7 +557,7 @@ services:
     profiles: ["local-db-disabled"]
   web:
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}
+      DATABASE_URL: mysql://${MYSQL_USER:-ark}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env to the MySQL server}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-ark}${MYSQL_URL_OPTIONS:-}
     depends_on:
       db: !reset
   worker:    (same two keys)
@@ -799,6 +801,7 @@ Planned but **not present**: `arks-service/deploy/apache-arkservice-docker.conf`
 | `--keep-alive 5` | Above Apache's `ttl=3`, so the proxy always closes an idle connection first |
 | `--max-requests 2000 --max-requests-jitter 200` | Each process is replaced after ~2000 requests, jittered so they do not all restart together; caps slow memory growth |
 | `--access-logfile -` | Access log to stdout (Docker's json-file). The bare systemd unit omits it because Apache already logs |
+| `--access-logformat` | `peer fwd=<X-Forwarded-For> real=<X-Real-IP> [time] "request" status bytes "referer" "agent"`. Behind a proxy the peer is always the proxy, so the two headers are what identify the client |
 
 `python manage.py migrate --no-input &&` runs first, every start.
 
@@ -970,10 +973,11 @@ docker compose cp web:/data/cutover-diff.csv .
 | Broker | Password-protected by default (`--requirepass`), generated 48-character secret; a blank line turns auth off and is only sensible on a machine nobody else reaches. The healthcheck does not trust `redis-cli`'s exit status |
 | `.env` | Created and kept at mode 600; gitignored; holds the secret key, admin password, broker password, database password. `make clean` keeps it deliberately |
 | Image | No data, no secrets, no `.env`, no `tests/`; `.dockerignore` keeps `.env`, `*.sql`, `*.csv`, `src/`, `.git` out of the main context; runs as uid 10001 with `nologin` |
-| Admin credentials | Passed to one `docker compose exec -e …` for `bootstrap_admin.py`; never in the service definition, never in the image; printed once on creation |
+| Admin credentials | Passed to one `docker compose exec -e …` for `bootstrap_admin.py`; never in the service definition, never in the image, never printed. `make info` says to change the password and blank the line in `.env`, which `ensure-env.sh` then leaves blank |
 | The legacy export | A secret (its `user` table holds reversibly encrypted staff passwords). `import-dump` copies it into `/data`, imports, and removes it in the same shell line, success or failure. `.gitignore` and `.dockerignore` both exclude `*.sql`/`*.sql.gz`. On a VM it arrives only over `scp` and is `shred -u`'d after import |
 | Production confirmations | `make clean`/`rebuild` prompt when `COMPOSE_FILE` names an external server; `make import-dump` refuses to write into an external database without `CONFIRM=yes`, dry run included |
 | Cookies and headers | Secure cookies and `TRUST_FORWARDED_FOR=true` only with the proxy override; `SECURE_HSTS_SECONDS` stays 0 until TLS is proven. The application adds CSP (`script-src 'self'; style-src 'self'`), Referrer-Policy and Permissions-Policy on every response |
+| Privileges | `web`, `worker` and `scheduler`: uid 10001, all capabilities dropped, `no-new-privileges`, `pids_limit`. `db` and `broker` keep their images' defaults, because they start as root and step down themselves |
 | Memory | Every application container and the broker have `mem_limit`; the broker's own `--maxmemory` sits below it so it refuses writes instead of being killed |
 
 ---
