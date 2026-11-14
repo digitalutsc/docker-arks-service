@@ -84,7 +84,7 @@ help: ## Show this help
 # checkout that is already there is left alone, the image is only built when
 # there is none, and an existing administrator keeps its password.
 up: env check src ## Bring the whole stack up, from nothing if need be
-	@docker image inspect $(IMAGE) >/dev/null 2>&1 || ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull
+	@docker image inspect $(IMAGE) >/dev/null 2>&1 || ARKS_REVISION="$(REVISION)" OS_PATCH_DATE="$$(date +%F)" $(COMPOSE) build --pull
 	@$(COMPOSE) up -d --wait --remove-orphans || { \
 	  echo; \
 	  echo "  The stack did not become healthy in time. A first start can take several"; \
@@ -158,7 +158,7 @@ confirm-external:
 build: env check src ## Build the application image
 	@old=$(call CONTENT_OF,$(IMAGE)); \
 	if [ -n "$$old" ]; then docker tag $(IMAGE) $(STAGED); fi; \
-	ARKS_REVISION="$(REVISION)" $(COMPOSE) build --pull \
+	ARKS_REVISION="$(REVISION)" OS_PATCH_DATE="$$(date +%F)" $(COMPOSE) build --pull \
 	  || { docker image rm $(STAGED) >/dev/null 2>&1; exit 1; }; \
 	new=$(call CONTENT_OF,$(IMAGE)); \
 	if [ -n "$$old" ] && [ "$$old" != "$$new" ]; then docker tag $(STAGED) $(PREV); fi; \

@@ -63,7 +63,23 @@ ENV PYTHONUNBUFFERED=1 \
 # libmariadb3 is the client library mysqlclient links against (what
 # default-libmysqlclient-dev builds it with on Debian); curl is for the
 # healthcheck. psycopg's binary wheel carries its own libpq.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` first: the python base image is rebuilt on its own
+# schedule, so between its builds it carries Debian packages whose security
+# fixes are already published (zlib1g, in November 2026, with two High CVEs
+# the image scan caught). Applying them here means the image is as patched as
+# Debian is on the day it is built, not as the base image happened to be.
+#
+# OS_PATCH_DATE is today's date when built through `make`. It is only there to
+# make Docker run this step again once a day: without it the step is cached
+# for as long as the base image stays the same, and a rebuild would keep
+# yesterday's packages. A plain `docker compose build` leaves it "unknown" and
+# so uses the cache.
+ARG OS_PATCH_DATE=unknown
+RUN echo "OS packages as of ${OS_PATCH_DATE}" \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         libmariadb3 curl \
     && rm -rf /var/lib/apt/lists/*
 

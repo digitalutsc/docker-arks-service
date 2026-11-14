@@ -125,8 +125,11 @@ services:
         plugin: ${ARKS_PLUGIN_SRC:-./plugins-none}
       # Recorded as a label on the image, so `make info` can say what is
       # running. The Makefile fills it in from the application checkout.
+      # OS_PATCH_DATE makes the Debian security-update step run again once a
+      # day (see the Dockerfile); the Makefile fills it in with today's date.
       args:
         ARKS_REVISION: ${ARKS_REVISION:-unknown}
+        OS_PATCH_DATE: ${OS_PATCH_DATE:-unknown}
     restart: unless-stopped
     logging: *logging
     <<: *hardening

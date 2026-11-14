@@ -697,6 +697,11 @@ empty `fallback/` directory is mounted and the application ignores it.
   consuming shows as `unhealthy` in `make ps`, and `make up` waits for both.
   Docker does not restart an unhealthy container; `docker compose restart
   worker` does.
+- **Debian security updates are applied at build time**: the image runs
+  `apt-get upgrade` on top of the Python base image, at most once a day, so
+  `make install` picks up fixes Debian has published even when the base image
+  has not been rebuilt yet. The weekly `scan` job in CI fails when a fixable
+  High or Critical vulnerability is left; the remedy is `make install`.
 - **Logs are capped**: Docker's `json-file` driver, five files of 10 MB per
   container. `make logs` reads them as before.
 - **Memory is capped per container**: `web` 1 GB, `worker` 2 GB,
